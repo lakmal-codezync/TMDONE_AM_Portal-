@@ -129,7 +129,24 @@ export async function loginToApp(page) {
     const emailInput = page
       .locator('input[type="email"], input[formcontrolname*="email" i], input[placeholder*="email" i], input')
       .first();
-    await emailInput.waitFor({ state: 'visible', timeout: 20000 });
+    const emailVisible = await emailInput.isVisible({ timeout: 20000 }).catch(() => false);
+    if (!emailVisible) {
+      if (isLoggedIn()) return;
+
+      const appShellVisible = await page
+        .locator('.sidebar, nav.navbar, a[href*="#/home"], app-root')
+        .first()
+        .isVisible({ timeout: 2000 })
+        .catch(() => false);
+      if (appShellVisible && !page.url().includes('signin')) return;
+
+      const bodyLine = ((await page.locator('body').innerText().catch(() => '')) || '').split('\n')[0] || page.url();
+      console.log(`Login email field was not visible after attempt ${attempt}; current page: ${bodyLine}`);
+      if (attempt === 3) {
+        throw new Error(`Login form did not render after retries. Current URL: ${page.url()}`);
+      }
+      continue;
+    }
     await emailInput.fill('');
     await emailInput.fill(CREDENTIALS.email);
 
