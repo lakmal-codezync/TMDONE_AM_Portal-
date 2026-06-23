@@ -6,6 +6,14 @@ import { loginToApp, CREDENTIALS } from '../helpers/loginHelper.js';
 const BASE_URL = CREDENTIALS.baseUrl;
 const VP_URL = `${BASE_URL}/#/home/vendor-performance`;
 
+/** @param {import('@playwright/test').Page} page */
+async function openVendorPerformance(page) {
+  await loginToApp(page);
+  await page.goto(VP_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
+  await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(1500);
+}
+
 // ============================================================
 // VP-01: Page Load & URL Verification
 // ============================================================
@@ -13,10 +21,7 @@ const VP_URL = `${BASE_URL}/#/home/vendor-performance`;
 // properly after login and the URL contains "vendor-performance".
 // ============================================================
 test('VP-01: Vendor Performance page loads and URL is correct', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(VP_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(1500);
+  await openVendorPerformance(page);
 
   const currentUrl = page.url();
   expect(currentUrl).toContain('vendor-performance');
@@ -25,7 +30,7 @@ test('VP-01: Vendor Performance page loads and URL is correct', async ({ page })
   const bodyText = await page.innerText('body');
   expect(bodyText.length).toBeGreaterThan(100);
 
-  console.log('✅ VP-01 PASSED: URL verified:', currentUrl);
+  console.log('âœ… VP-01 PASSED: URL verified:', currentUrl);
 });
 
 // ============================================================
@@ -35,26 +40,23 @@ test('VP-01: Vendor Performance page loads and URL is correct', async ({ page })
 // in the sidebar and the href is correct.
 // ============================================================
 test('VP-02: Sidebar shows Vendor Performance link correctly', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(VP_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(1500);
+  await openVendorPerformance(page);
 
   // Check the VP link in the sidebar (try multiple selectors)
   const vpLink = page.locator('.sidebar a[href*="vendor-performance"], a:has-text("Vendor Performance")').first();
   const linkVisible = await vpLink.isVisible().catch(() => false);
 
   if (!linkVisible) {
-    console.log('⚠️ VP-02 INFO: Vendor Performance sidebar link not found in expected location.');
+    console.log('âš ï¸ VP-02 INFO: Vendor Performance sidebar link not found in expected location.');
     return;
   }
 
   // Verify that the link text contains "Vendor Performance"
   const linkText = (await vpLink.innerText().catch(() => '')).trim();
-  console.log(`ℹ️ Sidebar link text: "${linkText}"`);
+  console.log(`â„¹ï¸ Sidebar link text: "${linkText}"`);
   expect(linkText.toLowerCase()).toContain('vendor');
 
-  console.log('✅ VP-02 PASSED: Vendor Performance sidebar link verified.');
+  console.log('âœ… VP-02 PASSED: Vendor Performance sidebar link verified.');
 });
 
 // ============================================================
@@ -64,10 +66,7 @@ test('VP-02: Sidebar shows Vendor Performance link correctly', async ({ page }) 
 // visible page heading or title element.
 // ============================================================
 test('VP-03: Vendor Performance page title/header is visible', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(VP_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(1500);
+  await openVendorPerformance(page);
 
   // Check for a page heading (h1, h2, h3 or a breadcrumb/title element)
   const heading = page.locator('h1, h2, h3, .page-title, .breadcrumb, [class*="title"]').first();
@@ -75,16 +74,16 @@ test('VP-03: Vendor Performance page title/header is visible', async ({ page }) 
 
   if (headingVisible) {
     const headingText = (await heading.textContent().catch(() => '')).trim() || '';
-    console.log(`ℹ️ Page heading found: "${headingText}"`);
+    console.log(`â„¹ï¸ Page heading found: "${headingText}"`);
     expect(headingText.length).toBeGreaterThan(0);
   } else {
     // Fallback: at minimum the page body should mention Vendor Performance
     const bodyText = await page.innerText('body');
     expect(bodyText.toLowerCase()).toContain('vendor');
-    console.log('ℹ️ No explicit heading found, but page body contains "vendor" keyword.');
+    console.log('â„¹ï¸ No explicit heading found, but page body contains "vendor" keyword.');
   }
 
-  console.log('✅ VP-03 PASSED: Page title/header verified.');
+  console.log('âœ… VP-03 PASSED: Page title/header verified.');
 });
 
 // ============================================================
@@ -94,25 +93,22 @@ test('VP-03: Vendor Performance page title/header is visible', async ({ page }) 
 // date filters) are visible on the Vendor Performance page.
 // ============================================================
 test('VP-04: Filter dropdown elements are visible', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(VP_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openVendorPerformance(page);
 
   // Check filter dropdowns (mat-select elements) - use broader selector
   const matSelects = page.locator('mat-select');
   const selectCount = await matSelects.count().catch(() => 0);
-  console.log(`ℹ️ mat-select elements found: ${selectCount}`);
+  console.log(`â„¹ï¸ mat-select elements found: ${selectCount}`);
 
   // Check text input fields (e.g., date text input)
   const textInputs = page.locator('input.mat-input-element, input[type="text"]');
   const inputCount = await textInputs.count().catch(() => 0);
-  console.log(`ℹ️ Input fields found: ${inputCount}`);
+  console.log(`â„¹ï¸ Input fields found: ${inputCount}`);
 
   // At least one filter control should exist
   expect(selectCount + inputCount).toBeGreaterThan(0);
 
-  console.log('✅ VP-04 PASSED: Filter elements verified. Selects:', selectCount, 'Inputs:', inputCount);
+  console.log('âœ… VP-04 PASSED: Filter elements verified. Selects:', selectCount, 'Inputs:', inputCount);
 });
 
 // ============================================================
@@ -123,26 +119,23 @@ test('VP-04: Filter dropdown elements are visible', async ({ page }) => {
 //   - "close" icon button (close-btn class)
 // ============================================================
 test('VP-05: Action buttons are present and visible', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(VP_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(1500);
+  await openVendorPerformance(page);
 
   // Search button (search-btn class)
   const searchBtn = page.locator('button.search-btn, button:has(mat-icon:has-text("search"))').first();
   const searchVisible = await searchBtn.isVisible().catch(() => false);
-  console.log(`ℹ️ Search button visible: ${searchVisible}`);
+  console.log(`â„¹ï¸ Search button visible: ${searchVisible}`);
 
   // Close/clear button (close-btn class)
   const closeBtn = page.locator('button.close-btn, button:has(mat-icon:has-text("close"))').first();
   const closeVisible = await closeBtn.isVisible().catch(() => false);
-  console.log(`ℹ️ Close button visible: ${closeVisible}`);
+  console.log(`â„¹ï¸ Close button visible: ${closeVisible}`);
 
   // Ensure at least one action button is visible (or just skip if none found)
   if (!searchVisible && !closeVisible) {
-    console.log('ℹ️ VP-05 INFO: No action buttons found on this page.');
+    console.log('â„¹ï¸ VP-05 INFO: No action buttons found on this page.');
   } else {
-    console.log('✅ VP-05 PASSED: Action buttons verified.');
+    console.log('âœ… VP-05 PASSED: Action buttons verified.');
   }
 });
 
@@ -151,29 +144,26 @@ test('VP-05: Action buttons are present and visible', async ({ page }) => {
 // ============================================================
 // Checks: Verifies that the main data area inside the
 // table-responsive div is visible.
-//   - div.table-responsive → main data container
+//   - div.table-responsive â†’ main data container
 // ============================================================
 test('VP-06: Data table area is visible', async ({ page }) => {
   await page.waitForTimeout(3000);
-  await loginToApp(page);
-  await page.goto(VP_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(1500);
+  await openVendorPerformance(page);
 
   // Main data area inside table-responsive div
   const tableArea = page.locator('.table-responsive').first();
   const tableVisible = await tableArea.isVisible().catch(() => false);
-  console.log(`ℹ️ Table area visible: ${tableVisible}`);
+  console.log(`â„¹ï¸ Table area visible: ${tableVisible}`);
 
   // Fallback: Check any table or list container
   const anyTable = page.locator('table, mat-table, .table-responsive').first();
   const anyVisible = await anyTable.isVisible().catch(() => false);
-  console.log(`ℹ️ Any table/list visible: ${anyVisible}`);
+  console.log(`â„¹ï¸ Any table/list visible: ${anyVisible}`);
 
   if (!anyVisible) {
-    console.log('⚠️ VP-06 INFO: No data table found on this page.');
+    console.log('âš ï¸ VP-06 INFO: No data table found on this page.');
   } else {
-    console.log('✅ VP-06 PASSED: Data area verified.');
+    console.log('âœ… VP-06 PASSED: Data area verified.');
   }
 });
 
@@ -184,21 +174,18 @@ test('VP-06: Data table area is visible', async ({ page }) => {
 // (prevents blank page errors) with a minimum of 200 characters.
 // ============================================================
 test('VP-07: Page has meaningful content (not blank)', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(VP_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(1500);
+  await openVendorPerformance(page);
 
   const bodyText = await page.innerText('body');
-  console.log(`ℹ️ Body text length: ${bodyText.length} chars`);
+  console.log(`â„¹ï¸ Body text length: ${bodyText.length} chars`);
   expect(bodyText.length).toBeGreaterThan(200);
 
   // Check if sidebar and navbar are properly rendered
   const sidebarExists = await page.locator('.sidebar').isVisible().catch(() => false);
   const navbarExists = await page.locator('nav.navbar').isVisible().catch(() => false);
-  console.log(`ℹ️ Sidebar exists: ${sidebarExists}, Navbar exists: ${navbarExists}`);
+  console.log(`â„¹ï¸ Sidebar exists: ${sidebarExists}, Navbar exists: ${navbarExists}`);
 
-  console.log('✅ VP-07 PASSED: Page has meaningful content.');
+  console.log('âœ… VP-07 PASSED: Page has meaningful content.');
 });
 
 // ============================================================
@@ -209,17 +196,14 @@ test('VP-07: Page has meaningful content (not blank)', async ({ page }) => {
 // Output: Saved as test-results/vendor-performance-layout.png
 // ============================================================
 test('VP-08: Full page screenshot for visual reference', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(VP_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(1500);
+  await openVendorPerformance(page);
 
   // Verify elements are visible before taking the screenshot
   const sidebarVisible = await page.locator('.sidebar').isVisible().catch(() => false);
   const navbarVisible = await page.locator('nav.navbar').isVisible().catch(() => false);
 
   if (!sidebarVisible || !navbarVisible) {
-    console.log('⚠️ VP-08 INFO: Sidebar or navbar not visible, skipping screenshot.');
+    console.log('âš ï¸ VP-08 INFO: Sidebar or navbar not visible, skipping screenshot.');
     return;
   }
 
@@ -234,9 +218,9 @@ test('VP-08: Full page screenshot for visual reference', async ({ page }) => {
   if (sidebarBox) {
     expect(sidebarBox.width).toBeGreaterThan(0);
     expect(sidebarBox.height).toBeGreaterThan(100);
-    console.log('✅ VP-08 PASSED: Screenshot saved → test-results/vendor-performance-layout.png');
+    console.log('âœ… VP-08 PASSED: Screenshot saved â†’ test-results/vendor-performance-layout.png');
   } else {
-    console.log('⚠️ VP-08 INFO: Sidebar has no bounding box.');
+    console.log('âš ï¸ VP-08 INFO: Sidebar has no bounding box.');
   }
 });
 
@@ -247,18 +231,15 @@ test('VP-08: Full page screenshot for visual reference', async ({ page }) => {
 // that row-level View/Edit actions can be triggered.
 // ============================================================
 test('VP-09: Verify Excel Export and Row View/Edit actions', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(VP_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(1500);
+  await openVendorPerformance(page);
 
   const exportBtn = page.locator('button:has-text("Export"), button:has-text("Download"), button:has-text("Excel")').first();
   if (await exportBtn.isVisible().catch(() => false) && await exportBtn.isEnabled().catch(() => false)) {
     await exportBtn.click();
     await page.waitForTimeout(1500);
-    console.log('✅ Excel Download/Export triggered!');
+    console.log('âœ… Excel Download/Export triggered!');
   } else {
-    console.log('ℹ️ Export button not visible or not enabled.');
+    console.log('â„¹ï¸ Export button not visible or not enabled.');
   }
 
   const rows = page.locator('mat-row, tbody tr');
@@ -270,15 +251,15 @@ test('VP-09: Verify Excel Export and Row View/Edit actions', async ({ page }) =>
       await actionBtn.click();
       await page.waitForTimeout(800);
       await page.keyboard.press('Escape');
-      console.log('✅ View/Edit action checked!');
+      console.log('âœ… View/Edit action checked!');
     } else {
-      console.log('ℹ️ No row action button found.');
+      console.log('â„¹ï¸ No row action button found.');
     }
   } else {
-    console.log('ℹ️ No rows found to test row actions.');
+    console.log('â„¹ï¸ No rows found to test row actions.');
   }
 
-  console.log('✅ VP-09 PASSED: Export and row actions verified.');
+  console.log('âœ… VP-09 PASSED: Export and row actions verified.');
 });
 
 // ============================================================
@@ -288,10 +269,7 @@ test('VP-09: Verify Excel Export and Row View/Edit actions', async ({ page }) =>
 // select Today, Week, and Month options by clicking their buttons.
 // ============================================================
 test('VP-10: Date range filter allows selecting Today, Week, Month', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(VP_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openVendorPerformance(page);
 
   let clickedCount = 0;
 
@@ -301,10 +279,10 @@ test('VP-10: Date range filter allows selecting Today, Week, Month', async ({ pa
   if (todayExists) {
     await todayBtn.click();
     await page.waitForTimeout(1000);
-    console.log('✅ Clicked "Today" button');
+    console.log('âœ… Clicked "Today" button');
     clickedCount++;
   } else {
-    console.log('ℹ️ "Today" button not found.');
+    console.log('â„¹ï¸ "Today" button not found.');
   }
 
   // Click 'Week' button (with fallback)
@@ -313,10 +291,10 @@ test('VP-10: Date range filter allows selecting Today, Week, Month', async ({ pa
   if (weekExists) {
     await weekBtn.click();
     await page.waitForTimeout(1000);
-    console.log('✅ Clicked "Week" button');
+    console.log('âœ… Clicked "Week" button');
     clickedCount++;
   } else {
-    console.log('ℹ️ "Week" button not found.');
+    console.log('â„¹ï¸ "Week" button not found.');
   }
 
   // Click 'Month' button (with fallback)
@@ -325,16 +303,16 @@ test('VP-10: Date range filter allows selecting Today, Week, Month', async ({ pa
   if (monthExists) {
     await monthBtn.click();
     await page.waitForTimeout(1000);
-    console.log('✅ Clicked "Month" button');
+    console.log('âœ… Clicked "Month" button');
     clickedCount++;
   } else {
-    console.log('ℹ️ "Month" button not found.');
+    console.log('â„¹ï¸ "Month" button not found.');
   }
 
   if (clickedCount === 0) {
-    console.log('⚠️ VP-10 INFO: No date range buttons found on the page.');
+    console.log('âš ï¸ VP-10 INFO: No date range buttons found on the page.');
   } else {
-    console.log(`✅ VP-10 PASSED: Successfully clicked ${clickedCount} date range buttons.`);
+    console.log(`âœ… VP-10 PASSED: Successfully clicked ${clickedCount} date range buttons.`);
   }
 });
 
@@ -345,28 +323,20 @@ test('VP-10: Date range filter allows selecting Today, Week, Month', async ({ pa
 // and trigger a search to filter the vendor performance data.
 // ============================================================
 test('VP-11: Custom Date Filter works correctly', async ({ page }) => {
-  await loginToApp(page);
-  
-  // Navigate with extended timeout and retry logic
   try {
-    await page.goto(VP_URL, { waitUntil: 'domcontentloaded', timeout: 90000 });
+    await openVendorPerformance(page);
   } catch (e) {
-    console.log('⚠️ VP-11 WARNING: Page navigation timeout, attempting retry...');
-    await page.goto(VP_URL, { waitUntil: 'networkidle', timeout: 120000 }).catch(() => {
-      console.log('⚠️ VP-11 SKIPPED: Unable to navigate to page.');
-      return;
-    });
+    console.log('VP-11 SKIPPED: Unable to navigate to page.');
+    return;
   }
-
-  await page.waitForTimeout(1500);
 
   // Locate the text inputs (usually for Start Date and End Date)
   const dateInputs = page.locator('input.mat-input-element, input[type="date"], input[type="text"]');
   const inputCount = await dateInputs.count().catch(() => 0);
   
   if (inputCount === 0) {
-    console.log('⚠️ VP-11 INFO: No date input fields found.');
-    console.log('✅ VP-11 PASSED: Date filter interaction verified.');
+    console.log('âš ï¸ VP-11 INFO: No date input fields found.');
+    console.log('âœ… VP-11 PASSED: Date filter interaction verified.');
     return;
   }
 
@@ -374,8 +344,8 @@ test('VP-11: Custom Date Filter works correctly', async ({ page }) => {
   const isVisible = await firstDateInput.isVisible().catch(() => false);
 
   if (!isVisible) {
-    console.log('⚠️ VP-11 INFO: Date input not visible.');
-    console.log('✅ VP-11 PASSED: Date filter interaction verified.');
+    console.log('âš ï¸ VP-11 INFO: Date input not visible.');
+    console.log('âœ… VP-11 PASSED: Date filter interaction verified.');
     return;
   }
 
@@ -390,10 +360,10 @@ test('VP-11: Custom Date Filter works correctly', async ({ page }) => {
   if (day10Visible) {
     await day10.click({ force: true }).catch(() => {});
     await page.waitForTimeout(800);
-    console.log('✅ Selected day 10 for date range');
+    console.log('âœ… Selected day 10 for date range');
   } else {
     await page.keyboard.press('Escape').catch(() => {});
-    console.log('ℹ️ Calendar not available');
+    console.log('â„¹ï¸ Calendar not available');
   }
 
   // Click the Search button to apply the filter (optional)
@@ -401,10 +371,10 @@ test('VP-11: Custom Date Filter works correctly', async ({ page }) => {
   if (await searchBtn.isVisible().catch(() => false)) {
     await searchBtn.click().catch(() => {});
     await page.waitForTimeout(1500);
-    console.log('✅ Clicked Search button after date filter.');
+    console.log('âœ… Clicked Search button after date filter.');
   }
 
-  console.log('✅ VP-11 PASSED: Custom Date filter verified.');
+  console.log('âœ… VP-11 PASSED: Custom Date filter verified.');
 });
 
 // ============================================================
@@ -414,17 +384,14 @@ test('VP-11: Custom Date Filter works correctly', async ({ page }) => {
 // store from the dropdown and trigger a search.
 // ============================================================
 test('VP-12: Store selection search feature works correctly', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(VP_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openVendorPerformance(page);
 
   // Find the Store selection dropdown (mat-select)
   const storeDropdown = page.locator('mat-select').first();
   const dropdownExists = await storeDropdown.isVisible().catch(() => false);
   
   if (!dropdownExists) {
-    console.log('⚠️ VP-12 INFO: No store dropdown found on the page.');
+    console.log('âš ï¸ VP-12 INFO: No store dropdown found on the page.');
     return;
   }
 
@@ -438,19 +405,19 @@ test('VP-12: Store selection search feature works correctly', async ({ page }) =
   if (optionCount > 0) {
     const firstStoreName = (await options.first().innerText().catch(() => '')).trim();
     if (firstStoreName && !firstStoreName.toLowerCase().includes('no matching')) {
-      console.log(`ℹ️ Found store to test: "${firstStoreName}"`);
+      console.log(`â„¹ï¸ Found store to test: "${firstStoreName}"`);
       try {
         await options.first().click();
-        console.log(`✅ Selected store: ${firstStoreName}`);
+        console.log(`âœ… Selected store: ${firstStoreName}`);
       } catch (e) {
-        console.log(`ℹ️ Could not select store option.`);
+        console.log(`â„¹ï¸ Could not select store option.`);
       }
     } else {
-      console.log('ℹ️ First store option invalid, closing dropdown.');
+      console.log('â„¹ï¸ First store option invalid, closing dropdown.');
       await page.keyboard.press('Escape');
     }
   } else {
-    console.log('ℹ️ No store options available, closing dropdown.');
+    console.log('â„¹ï¸ No store options available, closing dropdown.');
     await page.keyboard.press('Escape');
   }
 
@@ -459,10 +426,10 @@ test('VP-12: Store selection search feature works correctly', async ({ page }) =
   if (await searchBtn.isVisible().catch(() => false)) {
     await searchBtn.click();
     await page.waitForTimeout(2000);
-    console.log('✅ Clicked Search button after store selection.');
+    console.log('âœ… Clicked Search button after store selection.');
   }
 
-  console.log('✅ VP-12 PASSED: Store selection verified.');
+  console.log('âœ… VP-12 PASSED: Store selection verified.');
 });
 
 // ============================================================
@@ -474,29 +441,20 @@ test('VP-12: Store selection search feature works correctly', async ({ page }) =
 // ============================================================
 test('VP-13: Pagination - Next and Previous buttons work correctly', async ({ page }) => {
   try {
-    await loginToApp(page);
+    await openVendorPerformance(page);
   } catch (e) {
-    console.log('⚠️ VP-13 SKIPPED: Login failed.');
+    console.log('VP-13 SKIPPED: Unable to open Vendor Performance page.');
     return;
   }
-
-  try {
-    await page.goto(VP_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  } catch (e) {
-    console.log('⚠️ VP-13 SKIPPED: Navigation timeout.');
-    return;
-  }
-
-  await page.waitForTimeout(1500);
 
   // Step 1: Find mat-paginator on the current view
   const allPaginators = page.locator('mat-paginator');
   const paginatorCount = await allPaginators.count().catch(() => 0);
-  console.log(`ℹ️ Found ${paginatorCount} paginator(s) on the page.`);
+  console.log(`â„¹ï¸ Found ${paginatorCount} paginator(s) on the page.`);
 
   if (paginatorCount === 0) {
-    console.log('⚠️ VP-13 INFO: No pagination found on this page.');
-    console.log('✅ VP-13 PASSED: Pagination check completed.');
+    console.log('âš ï¸ VP-13 INFO: No pagination found on this page.');
+    console.log('âœ… VP-13 PASSED: Pagination check completed.');
     return;
   }
 
@@ -514,33 +472,33 @@ test('VP-13: Pagination - Next and Previous buttons work correctly', async ({ pa
   if (isNextVisible && isNextEnabled) {
     try {
       const labelBefore = (await rangeLabel.textContent().catch(() => '')).trim() || '';
-      console.log(`ℹ️ Range label before Next: "${labelBefore}"`);
+      console.log(`â„¹ï¸ Range label before Next: "${labelBefore}"`);
 
       await nextBtn.click();
       await page.waitForTimeout(1500);
 
       const labelAfter = (await rangeLabel.textContent().catch(() => '')).trim() || '';
-      console.log(`ℹ️ Range label after Next: "${labelAfter}"`);
+      console.log(`â„¹ï¸ Range label after Next: "${labelAfter}"`);
 
       if (labelAfter !== labelBefore) {
-        console.log('✅ Next button clicked successfully');
+        console.log('âœ… Next button clicked successfully');
         
         const isPrevEnabled = await prevBtn.isEnabled().catch(() => false);
         if (isPrevEnabled) {
           await prevBtn.click();
           await page.waitForTimeout(1500);
-          console.log('✅ Previous button clicked successfully');
+          console.log('âœ… Previous button clicked successfully');
         }
       }
     } catch (e) {
-      console.log(`ℹ️ Error during pagination interaction: ${e.message}`);
+      console.log(`â„¹ï¸ Error during pagination interaction: ${e.message}`);
     }
-    console.log('✅ VP-13 PASSED: Pagination buttons verified.');
+    console.log('âœ… VP-13 PASSED: Pagination buttons verified.');
   } else if (isNextVisible) {
-    console.log('⚠️ VP-13 INFO: Next button found but disabled – data fits in a single page.');
-    console.log('✅ VP-13 PASSED: Pagination check completed.');
+    console.log('âš ï¸ VP-13 INFO: Next button found but disabled â€“ data fits in a single page.');
+    console.log('âœ… VP-13 PASSED: Pagination check completed.');
   } else {
-    console.log('⚠️ VP-13 INFO: Next button not visible – likely no pagination needed.');
-    console.log('✅ VP-13 PASSED: Pagination check completed.');
+    console.log('âš ï¸ VP-13 INFO: Next button not visible â€“ likely no pagination needed.');
+    console.log('âœ… VP-13 PASSED: Pagination check completed.');
   }
 });

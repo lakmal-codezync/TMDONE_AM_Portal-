@@ -124,6 +124,12 @@ export class TMDoneClubPage {
   }
 
   async openFromSidebar() {
+    await goToPage(this.page, this.config.route);
+    await this.page.waitForLoadState('domcontentloaded').catch(() => {});
+    await this.page.waitForTimeout(1500);
+
+    if (await this.isSectionAvailable()) return;
+
     await goToPage(this.page, '#/home/campaigns');
     await this.page.waitForLoadState('domcontentloaded').catch(() => {});
 

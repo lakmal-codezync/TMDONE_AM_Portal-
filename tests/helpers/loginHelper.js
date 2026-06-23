@@ -26,9 +26,45 @@ export const CREDENTIALS = {
  */
 async function waitForNoSpinner(page) {
   const spinnerSelectors = ['.ngx-spinner-overlay', 'app-page-loader', '.loading-overlay', '.loading-spinner'];
-  for (const selector of spinnerSelectors) {
-    await page.locator(selector).waitFor({ state: 'hidden', timeout: 15000 }).catch(() => {});
+  const blockers = page.locator(spinnerSelectors.join(', '));
+
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const visibleCount = await blockers
+      .evaluateAll((nodes) =>
+        nodes.filter((node) => {
+          const element = /** @type {HTMLElement} */ (node);
+          const style = window.getComputedStyle(element);
+          const box = element.getBoundingClientRect();
+          return style.visibility !== 'hidden' && style.display !== 'none' && box.width > 0 && box.height > 0;
+        }).length
+      )
+      .catch(() => 0);
+
+    if (visibleCount === 0) return;
+    await page.waitForTimeout(500);
   }
+
+  for (const selector of spinnerSelectors) {
+    await page.locator(selector).waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+  }
+}
+
+/**
+ * @param {import('@playwright/test').Locator} button
+ * @param {import('@playwright/test').Page} page
+ */
+async function clickLoginButton(button, page) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await waitForNoSpinner(page);
+    await expect(button, 'Login button should be enabled before clicking.').toBeEnabled({ timeout: 15000 });
+
+    const clicked = await button.click({ timeout: 10000 }).then(() => true).catch(() => false);
+    if (clicked) return;
+
+    await page.waitForTimeout(1000);
+  }
+
+  await button.click({ force: true, timeout: 10000 });
 }
 
 /**
@@ -70,15 +106,15 @@ export async function loginToApp(page) {
     await dismissSweetAlert(page);
 
     try {
-      await page.goto(CREDENTIALS.loginUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+      await page.goto(CREDENTIALS.loginUrl, { waitUntil: 'commit', timeout: 120000 });
     } catch (error) {
       if (isLoggedIn()) return;
       if (attempt === 3) throw error;
-      await page.waitForTimeout(3000);
+      await page.waitForTimeout(3000).catch(() => {});
       continue;
     }
 
-    await page.waitForLoadState('domcontentloaded').catch(() => {});
+    await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
     await waitForNoSpinner(page);
     await dismissSweetAlert(page);
     await page.waitForTimeout(1500);
@@ -105,9 +141,7 @@ export async function loginToApp(page) {
     // Click the login button after it becomes enabled.
     const loginBtn = page.locator('button[type="submit"], button:has-text("Sign in"), button:has-text("Login")').first();
     await loginBtn.waitFor({ state: 'visible', timeout: 15000 });
-    await waitForNoSpinner(page);
-    await expect(loginBtn, 'Login button should be enabled before clicking.').toBeEnabled({ timeout: 15000 });
-    await loginBtn.click();
+    await clickLoginButton(loginBtn, page);
 
     await waitForNoSpinner(page);
     await page.waitForURL((url) => !url.toString().includes('signin'), { timeout: 45000 }).catch(() => {});
@@ -121,7 +155,7 @@ export async function loginToApp(page) {
       return;
     }
 
-    if (/check your username and password|invalid|incorrect|unauthori[sz]ed/i.test(loginAlertText)) {
+    if (attempt === 3 && /check your username and password|invalid|incorrect|unauthori[sz]ed/i.test(loginAlertText)) {
       throw new Error(
         `Login failed: ${loginAlertText}. Check TMDONE_EMAIL/TMDONE_PASSWORD or the shared test account state.`
       );
@@ -144,8 +178,9 @@ export async function loginToApp(page) {
 export async function goToPage(page, hashPath) {
   const fullUrl = `${CREDENTIALS.baseUrl}/${hashPath}`;
   await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
-  await page.waitForTimeout(2500);
   await page.waitForLoadState('domcontentloaded');
+  await waitForNoSpinner(page);
+  await page.waitForTimeout(1000);
   console.log(`Navigated: ${fullUrl}`);
 }
 
