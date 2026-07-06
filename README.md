@@ -1,262 +1,172 @@
-# TMDone Admin Console Playwright Suite
+# Admin Portal Playwright Automation
 
-Playwright-based end-to-end automation suite for the TMDone Admin Console. This project covers core admin workflows such as authentication, dashboard validation, reports, stores, offers, campaigns, reels, driver KPI slabs, and TM Done Club analytics.
+End-to-end Playwright automation suite for a modern admin portal. The project is organized as a feature-by-feature regression pack that checks sign-in, dashboards, reporting, operational tables, campaign tools, media workflows, and subscription-style modules.
 
+This repository is prepared for engineering review, CI execution, and safe public sharing. Real client data, company names, user records, production URLs, credentials, and screenshots with identifiable business information must not be committed.
 
-## ALL Testcases
-https://docs.google.com/document/d/1Ygw7hUGV8gru99CCkvyM2YsT4JEum7l8b5V8GpcdkAQ/edit?usp=sharing
+## What This Suite Does
 
+The suite behaves like a careful QA operator moving through the portal:
 
-## System Overview
+- Signs in and verifies authenticated navigation.
+- Checks dashboards, cards, filters, tables, pagination, dialogs, and exports.
+- Exercises safe CRUD-style flows without intentionally damaging real data.
+- Handles UAT variability such as empty states, permissions, redirects, and optional backend data.
+- Captures Playwright reports, screenshots, videos, and traces only as local or CI artifacts.
 
-This automation pack is designed to validate the main operational areas of the admin console:
-
-- Authentication and session handling
-- Dashboard widgets, filters, and navigation
-- Vendor performance and reporting flows
-- Stores and store ratings management
-- Offers and order-management journeys
-- Portfolio and accounts-management coverage
-- Campaigns and Smart Boost workflows
-- Reels management
-- Driver KPI slab schemes
-- TM Done Club analytics and module navigation
-
-The suite is organized as feature-based Playwright specs with reusable helpers for login, page navigation, filters, dialogs, and CRUD flows.
-
-## Application Screenshots
-
-The screenshots below show the main pages covered by the Playwright suite. They are stored under `docs/screenshots/` so the README can act as a quick visual map of the admin console.
-
-### Login
-
-<img src="docs/screenshots/login.png" alt="TMDone Admin Console login page" width="900">
-
-The login page verifies the first user-facing checkpoint of the console. The authentication tests cover required fields, invalid credentials, password visibility, keyboard navigation, and successful sign-in behavior.
-
-### Dashboard
-
-<img src="docs/screenshots/dashboard.png" alt="TMDone Admin Console dashboard page" width="900">
-
-The dashboard is the main landing area after sign-in. Tests validate key summary cards, branch operation counts, assignment and notification panels, date controls, top store lists, sidebar navigation, session handling, and responsive behavior.
-
-### Vendor Performance
-
-<img src="docs/screenshots/vendor-performance.png" alt="Vendor Performance page" width="900">
-
-The Vendor Performance page is used to inspect vendor-level operational metrics. The suite checks page loading, headers, filters, date controls, data areas, export actions, row actions, and pagination behavior.
-
-### Reports
-
-<img src="docs/screenshots/reports.png" alt="Reports page" width="900">
-
-The Reports area groups multiple operational report tabs in one module. Tests cover fulfillment, cancellation reasons, orders count, busy vendors, menu optimization, sales, and target offer usage report flows, including date filters, store filters, tabs, search actions, and downloads.
-
-### Analysis
-
-<img src="docs/screenshots/analysis.png" alt="Analysis page" width="900">
-
-The Analysis page validates performance dashboards and comparison views. The automated checks focus on chart rendering, date controls, store comparison inputs, summary content, and page stability.
-
-### Stores
-
-<img src="docs/screenshots/stores.png" alt="Stores page" width="900">
-
-The Stores page covers store search, filtering, data-table validation, status controls, and store detail actions. The tests confirm that the module can load store data, search for records, and handle common management actions safely.
-
-### Store Ratings
-
-<img src="docs/screenshots/store-ratings.png" alt="Store Ratings page" width="900">
-
-The Store Ratings page is used to filter and export rating records. Tests validate store and rating-type filters, combined search behavior, clear actions, date filters, export behavior, pagination, and first-row detail actions.
-
-### Offers
-
-<img src="docs/screenshots/offers.png" alt="Offers page" width="900">
-
-The Offers page is tested as a full CRUD workflow. Coverage includes creating an offer, searching for it, editing it, deleting it, plus table search, pagination, export availability, and failure handling for incomplete create forms.
-
-### Order Management
-
-<img src="docs/screenshots/order-management.png" alt="Order Management page" width="900">
-
-The Order Management page covers order list inspection and operational filters. Tests validate the table shell, status dropdowns, secondary filters, date-range search, text search, clear actions, export behavior, pagination, and view-order action paths.
-
-### Portfolio Analysis
-
-<img src="docs/screenshots/portfolio-analysis.png" alt="Portfolio Analysis page" width="900">
-
-The Portfolio Analysis page focuses on account and portfolio reporting workflows. Tests verify table structure, search behavior, pagination, first-row actions, and download availability where the backend allows it.
-
-### Accounts Management
-
-<img src="docs/screenshots/accounts-management.png" alt="Accounts Management page" width="900">
-
-The Accounts Management page validates account search and operational table behavior. Coverage includes filters, table structure, pagination, row edit/action paths, bulk upload selection, account-manager list download, assign actions, and delegate actions.
-
-### Campaigns
-
-<img src="docs/screenshots/campaigns.png" alt="Campaigns page" width="900">
-
-The Campaigns page is one of the largest workflow areas in the suite. Tests cover campaign creation, management, edit and delete flows, promo code configuration, campaign offers, free delivery, store pinning, fixed delivery fee management, filters, search, and pagination.
-
-### Smart Boost Campaign
-
-<img src="docs/screenshots/smart-boost-campaign.png" alt="Smart Boost Campaign page" width="900">
-
-The Smart Boost Campaign page covers boosted campaign management. Tests validate the page shell, filters, search, clear behavior, pagination, creation flow, export availability, row actions, top-up dialogs, and terminate dialogs.
-
-### Driver KPI Slabs
-
-<img src="docs/screenshots/driver-kpi-slabs.png" alt="Driver KPI Slabs page" width="900">
-
-Driver KPI Slabs cover fare-scheme-style configuration pages. The suite validates average attendance, block count, number of fines, redispatch rate, and speed of delivery slab schemes, including create, edit, delete, search, and table behavior.
-
-### Reels
-
-<img src="docs/screenshots/reels.png" alt="Reels page" width="900">
-
-The Reels page tests media-style content management. Coverage includes table loading, create/update/delete flows, multi-step form behavior, upload-area visibility, search, filters, pagination, and row-level actions.
-
-### TM Done Club Analytics
-
-<img src="docs/screenshots/tm-done-club-analytics.png" alt="TM Done Club Analytics page" width="900">
-
-The TM Done Club Analytics page verifies club performance visibility. Tests cover analytics cards, navigation behavior, redirect handling, and module stability for users with varying permissions.
-
-### TM Done Club Plans
-
-<img src="docs/screenshots/tm-done-club-plans.png" alt="TM Done Club Plans page" width="900">
-
-The Subscription Plans page covers plan configuration for club members. Tests validate plan creation, benefit and price fields, updates, deletes, table actions, and safe handling of required fields.
-
-### TM Done Club Subscriptions
-
-<img src="docs/screenshots/tm-done-club-subscriptions.png" alt="TM Done Club Subscriptions page" width="900">
-
-The Subscriptions page focuses on member subscription reporting. Tests validate table visibility, report-style filters, data loading, and navigation inside the TM Done Club module.
-
-### TM Done Club Cancellation Reasons
-
-<img src="docs/screenshots/tm-done-club-cancellation-reasons.png" alt="TM Done Club Cancellation Reasons page" width="900">
-
-The Cancellation Reasons page covers the configuration and reporting of cancellation reason data. Tests verify page loading, list visibility, create/update/delete paths where available, and stable module navigation.
-
-## Project Structure
+## Coverage Map
 
 ```text
 tests/
-  01-Auth/
-  02-Dashboard/
-  03-VendorPerformance/
-  04-Reports/
-  05-Analysis/
-  06-Stores/
-  07-Stores Ratings/
-  08-Offers/
-  09-Order Management/
-  10-Portfolio Analysis/
-  11-Accounts Management/
-  12-Campaigns/
-  13-Smart Boost Campaign/
-  14-Driver KPI Slabs/
-  15-Reels/
-  16-TM Done Club/
-  helpers/
-docs/
-  screenshots/
-scripts/
-  capture-readme-screenshots.mjs
-playwright.config.js
-package.json
+  01-Auth/                    Sign-in and authentication checks
+  02-Dashboard/               Dashboard widgets and navigation
+  03-VendorPerformance/       Performance tables and filters
+  04-Reports/                 Operational reports and exports
+  05-Analysis/                Analytics dashboards and charts
+  06-Stores/                  Store search, filters, and actions
+  07-Stores Ratings/          Ratings filters and table behavior
+  08-Offers/                  Offer create, edit, delete, search
+  09-Order Management/        Order list and view-order flows
+  10-Portfolio Analysis/      Portfolio reporting checks
+  11-Accounts Management/     Account table and action coverage
+  12-Campaigns/               Campaign, promo, delivery, pinning flows
+  13-Smart Boost Campaign/    Boost campaign workflows
+  14-Driver KPI Slabs/        Slab scheme configuration flows
+  15-Reels/                   Media/reels management flows
+  16-TM Done Club/            Analytics, plans, subscriptions, reasons
+  17-User Notifications/      Notification workflow coverage
+  helpers/                    Shared login and navigation utilities
 ```
 
-## Key Test Areas
+## Tech Stack
 
-### Core modules
-
-- `tests/01-Auth`: sign-in validation and authentication checks
-- `tests/02-Dashboard`: widget visibility, quick navigation, summary panels
-- `tests/03-VendorPerformance`: tables, filters, paging
-- `tests/04-Reports`: multiple business reports and export/filter behavior
-- `tests/05-Analysis`: analysis dashboards and chart rendering
-- `tests/06-Stores`, `tests/07-Stores Ratings`: store operations and ratings views
-- `tests/08-Offers`: offer creation and feature validation
-- `tests/09-Order Management`: order inspection flows
-
-### Growth and campaign modules
-
-- `tests/12-Campaigns`: campaign creation, edits, deletes, promo code, store pinning, delivery fee management
-- `tests/13-Smart Boost Campaign`: Smart Boost flows
-- `tests/15-Reels`: reels create, update, delete, and table actions
-
-### Operations and club modules
-
-- `tests/14-Driver KPI Slabs`: slab scheme coverage
-- `tests/16-TM Done Club`: analytics, subscription plans, subscription reports, cancellation reasons
-
-## Getting Started
-
-### Prerequisites
-
+- Playwright Test
+- JavaScript ES modules
 - Node.js
-- npm
-- Playwright browsers
+- GitHub Actions
 
-### Install
+## Quick Start
+
+Install dependencies:
 
 ```bash
-npm install
+npm ci
 npx playwright install
 ```
 
-## Running Tests
-
-### Full suite
+Run the full suite:
 
 ```bash
 npm test
 ```
 
-### Feature suites
+Open the latest HTML report:
 
 ```bash
+npm run report
+```
+
+## Useful Test Commands
+
+```bash
+npm run test:auth
 npm run test:dashboard
 npm run test:reports
 npm run test:campaigns
+npm run test:boost
 npm run test:reels
 npm run test:club
+npm run test:user-notifications
 ```
 
-### Useful modes
+Debug locally:
 
 ```bash
 npm run test:headed
 npm run test:debug
-npm run report
 ```
 
-### Refresh README screenshots
+## Environment Variables
+
+The shared login helper reads these values:
+
+```text
+TMDONE_BASE_URL
+TMDONE_EMAIL
+TMDONE_PASSWORD
+```
+
+For GitHub Actions, set them as repository secrets or variables:
+
+- `TMDONE_EMAIL`: repository secret
+- `TMDONE_PASSWORD`: repository secret
+- `TMDONE_BASE_URL`: repository variable, optional
+
+Do not commit real credentials, personal access tokens, private URLs, or account-specific values.
+
+## CI/CD
+
+The GitHub Actions workflow lives at:
+
+```text
+.github/workflows/playwright.yml
+```
+
+It runs on pushes and pull requests to `main` or `master`:
+
+1. Checks out the repo.
+2. Installs Node dependencies with `npm ci`.
+3. Installs Playwright browsers.
+4. Runs `npx playwright test`.
+5. Uploads the Playwright HTML report as an artifact.
+
+## Privacy And Screenshots
+
+Screenshots are not embedded in this README by design.
+
+If screenshots are ever added for documentation, they must be sanitized first:
+
+- No company names.
+- No client names.
+- No customer names, phone numbers, emails, addresses, order IDs, or account IDs.
+- No real revenue, budget, campaign, or subscription values.
+- No internal URLs, tokens, cookies, headers, or credentials.
+- Use mock data, blurred/redacted images, or recreated demo screens only.
+
+Generated screenshots should stay local or in CI artifacts unless they have been reviewed and redacted.
+
+## Reports And Artifacts
+
+Local Playwright outputs are generated under:
+
+```text
+test-results/
+playwright-report/
+blob-report/
+```
+
+These folders are ignored by Git. CI artifacts are available from the GitHub Actions run summary.
+
+## Design Notes
+
+- Tests are grouped by portal module to keep failures easy to triage.
+- Shared helpers centralize login, routing, dialog handling, and safe UI actions.
+- Specs prefer resilient selectors and explicit empty-state handling for UAT stability.
+- Destructive flows are guarded where possible so the suite can be run against shared test environments.
+
+## Maintainer Notes
+
+Before pushing:
 
 ```bash
-node scripts/capture-readme-screenshots.mjs
+git status --short
+npm run test:boost
+npm run test:reels
+npx playwright test SubscriptionPlans.spec.js
 ```
 
-This command signs in to the UAT console and refreshes the screenshots in `docs/screenshots/`.
+For full release confidence, run:
 
-## Notes
-
-- Credentials and environment-specific routing are handled through shared helpers under `tests/helpers/`.
-- Some UAT modules can behave differently depending on permission or backend availability; the TM Done Club suite has explicit handling for those module-level redirects.
-- Generated reports and transient test outputs are excluded via `.gitignore`.
-
-## Tech Stack
-
-- Playwright
-- JavaScript ES modules
-- Node.js
-
-## Maintainer
-
-- GitHub: `lakmal-codezync`
-- Email: `lakmal@codezync.com`
+```bash
+npm test
+```

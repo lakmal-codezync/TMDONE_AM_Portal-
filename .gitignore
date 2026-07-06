@@ -14,3 +14,7 @@ node_modules/
 /github-run-*-report/
 /github-run-*-report-json/
 /github-run-*-report.zip
+
+# Documentation screenshots may contain client or company data.
+# Commit only sanitized images after explicit review.
+/docs/screenshots/*.png
