@@ -1,226 +1,30 @@
-# Admin Portal Playwright Automation
+# TMDone Admin Portal - Playwright Automation
 
-> End-to-end Playwright automation for a full admin portal: authentication, dashboards, reports, operations, campaigns, media, subscriptions, notifications, and CI/CD reporting.
+> A complete end-to-end automation system for the TMDone Admin Portal.  
+> The suite validates login, dashboards, reports, stores, campaigns, orders, media, subscriptions, notifications, and safe admin workflows using Playwright.
 
-This project is an executable QA system for a real admin-style web UI. The tests follow the same paths an operations user would take: sign in, inspect dashboards, filter records, open dialogs, validate tables, exercise safe create/update/delete paths, and confirm report artifacts.
+This repository is the automated QA layer for an admin-style web application. It follows real user journeys: sign in, navigate modules, filter data, open dialogs, validate tables, run safe create/update/delete paths, verify downloads, and publish Playwright reports in CI.
 
-The documentation is written to be public-repository friendly. Real UI screenshots may be used only after sensitive content is redacted. Do not commit company names, client names, user records, phone numbers, emails, order IDs, private URLs, credentials, budgets, revenue values, or any other business-sensitive data.
+## Quick Links
 
-## Test Case Document
+- [System Overview](#system-overview)
+- [Page Screenshots](#page-screenshots)
+- [Automation Flow](#automation-flow)
+- [Quick Start](#quick-start)
+- [Test Case Document](#test-case-document)
+- [Before Pushing](#before-pushing)
 
-Full manual testcase documentation:
-
-[Open testcase document](https://docs.google.com/document/d/1Ygw7hUGV8gru99CCkvyM2YsT4JEum7l8b5V8GpcdkAQ/edit?tab=t.0#heading=h.v8182vllkw9o)
-
-Use the Google Doc as the manual testcase catalogue and this repository as the automated execution layer.
-
-## System Preview
+## System Overview
 
 <p align="center">
-  <img src="docs/screenshots/sanitized-dashboard.svg" alt="Sanitized admin portal dashboard preview" width="900">
+  <img src="docs/screenshots/sanitized-dashboard.svg" alt="Sanitized TMDone admin portal preview" width="900">
 </p>
 
-The portal is organized into feature modules. Each module has its own Playwright spec folder, and shared helpers handle login, routing, dialogs, table actions, filters, empty states, and safe cleanup behavior.
+The automation is organized by admin module. Each folder under `tests/` represents one feature area, while shared helpers handle login, routing, loading states, dialogs, row actions, table checks, filters, pagination, downloads, and safe cleanup behavior.
 
-## Page-By-Page System Walkthrough
+At a system level, the test suite behaves like a careful admin user. It signs in through the real authentication page, opens each business module, verifies the important controls, runs searches and filters, checks tables or empty states, opens action menus, tests safe create/update/delete paths, and leaves shared environments protected whenever a destructive action is possible.
 
-### 01. Authentication
-
-Validates the first security checkpoint of the portal. The tests cover required email and password validation, invalid login handling, successful sign-in, session routing, and common login-page controls.
-
-Command:
-
-```bash
-npm run test:auth
-```
-
-### 02. Dashboard
-
-Checks the main landing page after login. Coverage includes summary cards, dashboard widgets, quick navigation, visible panels, date or filter controls, sidebar links, and stable page load behavior.
-
-Command:
-
-```bash
-npm run test:dashboard
-```
-
-### 03. Vendor Performance
-
-Validates operational performance reporting. The test suite checks headers, filters, data tables, empty states, row visibility, pagination, and export-style actions where available.
-
-Command:
-
-```bash
-npm run test:vendor
-```
-
-### 04. Reports
-
-Covers report modules used by operations and management teams. Tests inspect tab navigation, date filters, store filters, search actions, result tables, downloads, and graceful handling when report data is unavailable.
-
-Command:
-
-```bash
-npm run test:reports
-```
-
-### 05. Analysis
-
-Verifies analytics pages and chart-heavy views. The suite focuses on page stability, chart containers, filters, comparison controls, and visible summary data.
-
-Command:
-
-```bash
-npm run test:analysis
-```
-
-### 06. Stores
-
-Checks store-management screens. Coverage includes search, filters, table columns, row actions, status indicators, pagination, and store detail navigation where the environment allows it.
-
-Command:
-
-```bash
-npm run test:stores
-```
-
-### 07. Store Ratings
-
-Validates rating and feedback views. Tests cover rating filters, store filters, date filters, result tables, export availability, first-row actions, and clear/reset behavior.
-
-Command:
-
-```bash
-npm run test:ratings
-```
-
-### 08. Offers
-
-Exercises offer-management workflows. Coverage includes create dialogs, form validation, search, edit, delete, pagination, export visibility, and safe handling for incomplete or restricted flows.
-
-Command:
-
-```bash
-npm run test:offers
-```
-
-### 09. Order Management
-
-Checks order list and order-inspection flows. Tests validate status filters, secondary filters, date-range search, text search, clear actions, export controls, pagination, and view-order paths.
-
-Command:
-
-```bash
-npm run test:orders
-```
-
-### 10. Portfolio Analysis
-
-Validates portfolio-style reporting screens. Coverage includes page shell, search behavior, result tables, pagination, first-row actions, and download availability where supported.
-
-Command:
-
-```bash
-npm run test:portfolio
-```
-
-### 11. Accounts Management
-
-Checks account-management workflows. Tests cover account search, filters, tables, edit/action paths, assignment flows, bulk-upload surfaces, and account-manager download actions.
-
-Command:
-
-```bash
-npm run test:accounts
-```
-
-### 12. Campaigns
-
-One of the broadest modules in the suite. Tests cover campaign creation, management, edit/delete behavior, promo code configuration, campaign offers, free delivery, store pinning, fixed delivery fee management, filters, search, and pagination.
-
-Command:
-
-```bash
-npm run test:campaigns
-```
-
-### 13. Smart Boost Campaign
-
-Validates boosted campaign workflows. Coverage includes the list page, search, filters, empty states, create form, export visibility, row actions, manage campaign navigation, dashboard navigation, top-up dialogs, and terminate dialogs.
-
-Command:
-
-```bash
-npm run test:boost
-```
-
-### 14. Driver KPI Slabs
-
-Checks driver KPI slab configuration pages. Tests validate slab scheme pages such as attendance, fines, block count, redispatch rate, and delivery speed, including create/edit/delete surfaces where available.
-
-Command:
-
-```bash
-npm run test:kpi
-```
-
-### 15. Reels
-
-Validates media-style content management. The suite checks list loading, row actions, view/edit/delete flows, create-form behavior, required media handling, search, filters, and pagination.
-
-Command:
-
-```bash
-npm run test:reels
-```
-
-### 16. TM Done Club
-
-Covers membership/subscription-style modules. Tests validate analytics, subscription plans, subscription reports, cancellation reasons, table visibility, filters, create/update surfaces, and safe skip behavior when backend data is not returned.
-
-Command:
-
-```bash
-npm run test:club
-```
-
-### 17. User Notifications
-
-Checks notification-management workflows. Coverage includes page shell, filters, tables, create or action dialogs, and stable navigation through notification-related controls.
-
-Command:
-
-```bash
-npm run test:user-notifications
-```
-
-## Automation Flow
-
-<p align="center">
-  <img src="docs/screenshots/automation-flow.svg" alt="Sanitized Playwright automation flow" width="900">
-</p>
-
-1. Developer pushes code or opens a pull request.
-2. GitHub Actions installs dependencies and browsers.
-3. Playwright signs in using repository secrets.
-4. Specs run sequentially for shared-environment stability.
-5. HTML reports, traces, videos, and screenshots are saved as artifacts.
-
-## CI/CD Report Preview
-
-<p align="center">
-  <img src="docs/screenshots/ci-report.svg" alt="Sanitized CI report preview" width="900">
-</p>
-
-Workflow file:
-
-```text
-.github/workflows/playwright.yml
-```
-
-The workflow runs on pushes and pull requests to `main` or `master`.
-
-## Project Structure
+The suite is intentionally modular. A failing report, campaign, store, or subscription test can be traced back to one feature folder, while common browser behavior stays in shared helper files. This keeps the automation readable and easier to extend when new portal pages are added.
 
 ```text
 tests/
@@ -242,10 +46,6 @@ tests/
   16-TM Done Club/
   17-User Notifications/
   helpers/
-docs/
-  screenshots/
-playwright.config.js
-package.json
 ```
 
 ## Tech Stack
@@ -254,6 +54,320 @@ package.json
 - JavaScript ES modules
 - Node.js
 - GitHub Actions
+- HTML reports, screenshots, videos, and traces
+
+## How The Suite Works
+
+| Layer | Responsibility |
+| --- | --- |
+| `playwright.config.js` | Defines Chromium execution, retries, timeouts, report output, screenshots, videos, traces, and one-worker shared-environment stability. |
+| `tests/helpers/loginHelper.js` | Centralizes credentials, login, direct route navigation, loading-state waits, modal handling, row action menus, and safe delete cancellation. |
+| Feature spec folders | Hold page-specific journeys such as reports, stores, campaigns, orders, reels, subscriptions, and notifications. |
+| `docs/screenshots/` | Stores privacy-safe visual documentation used by this README. |
+| `.github/workflows/playwright.yml` | Runs the suite in CI and uploads the Playwright HTML report as an artifact. |
+
+## Main Features Covered
+
+| Area | What The Automation Checks |
+| --- | --- |
+| Authentication | Required-field validation, invalid credentials, successful login, keyboard behavior, password visibility, and session routing. |
+| Dashboard | Widgets, statistic cards, navigation links, header controls, responsive behavior, and page-load stability. |
+| Reports | Report tabs, date ranges, store filters, search, result tables, empty states, pagination, and export/download controls. |
+| Stores | Search, dropdown filters, status controls, table rows, row actions, detail navigation, and safe operational actions. |
+| Campaigns | Campaign creation, management screens, promo codes, offers, free delivery, store pinning, fixed delivery fees, edit/delete flows, and pagination. |
+| Smart Boost | Campaign list, filters, create form, export, row actions, dashboard navigation, top-up dialog, and terminate dialog. |
+| Driver KPI Slabs | KPI scheme pages, filters, slab create/edit/delete surfaces, view actions, and safe confirmation handling. |
+| Reels | Media list, create form, validation, upload surfaces, view/edit/delete actions, search, filters, and pagination. |
+| TM Done Club | Analytics, subscription plans, subscription reports, cancellation reasons, create/update/delete flows, filters, and empty-state handling. |
+| Notifications | Notification list, create workflow, phone-number upload, detail view, downloads, filters, row actions, and pagination. |
+
+## Page Screenshots
+
+Screenshots must be privacy-safe before they are committed. Use the file names below for each page so the README renders as a complete visual walkthrough.
+
+### 01. Authentication
+
+<p align="center">
+  <img src="docs/screenshots/login.svg" alt="Authentication page screenshot" width="900">
+</p>
+
+Validates the first security checkpoint of the portal: required fields, invalid login messages, successful sign-in, keyboard navigation, and password masking.
+
+Command:
+
+```bash
+npm run test:auth
+```
+
+### 02. Dashboard
+
+<p align="center">
+  <img src="docs/screenshots/dashboard.svg" alt="Dashboard page screenshot" width="900">
+</p>
+
+Checks the landing page after login, including summary cards, widgets, quick navigation, filter controls, sidebar links, and stable rendering.
+
+Command:
+
+```bash
+npm run test:dashboard
+```
+
+### 03. Vendor Performance
+
+<p align="center">
+  <img src="docs/screenshots/vendor-performance.svg" alt="Vendor Performance page screenshot" width="900">
+</p>
+
+Validates operational performance reporting with filters, data tables, export controls, row actions, pagination, and meaningful page content.
+
+Command:
+
+```bash
+npm run test:vendor
+```
+
+### 04. Reports
+
+<p align="center">
+  <img src="docs/screenshots/reports.svg" alt="Reports page screenshot" width="900">
+</p>
+
+Covers Fulfillment, Sales, Orders Count, Cancellation Reasons, Busy Vendors, Menu Optimization, and Target Offer Usage reports.
+
+Command:
+
+```bash
+npm run test:reports
+```
+
+### 05. Analysis
+
+<p align="center">
+  <img src="docs/screenshots/analysis.svg" alt="Analysis page screenshot" width="900">
+</p>
+
+Verifies analytics pages, date comparisons, store selection, chart containers, search behavior, downloads, and pagination.
+
+Command:
+
+```bash
+npm run test:analysis
+```
+
+### 06. Stores
+
+<p align="center">
+  <img src="docs/screenshots/stores.svg" alt="Stores page screenshot" width="900">
+</p>
+
+Checks store-management workflows: search, status filters, zone/store dropdowns, export, create dialog, row actions, and store details.
+
+Command:
+
+```bash
+npm run test:stores
+```
+
+### 07. Store Ratings
+
+<p align="center">
+  <img src="docs/screenshots/store-ratings.svg" alt="Store Ratings page screenshot" width="900">
+</p>
+
+Validates rating filters, store filters, date range controls, search, clear/reset behavior, export controls, pagination, and details actions.
+
+Command:
+
+```bash
+npm run test:ratings
+```
+
+### 08. Offers
+
+<p align="center">
+  <img src="docs/screenshots/offers.svg" alt="Offers page screenshot" width="900">
+</p>
+
+Exercises target-audience/offer-query flows including create, validation, search, pagination, export, edit, and delete confirmation handling.
+
+Command:
+
+```bash
+npm run test:offers
+```
+
+### 09. Order Management
+
+<p align="center">
+  <img src="docs/screenshots/order-management.svg" alt="Order Management page screenshot" width="900">
+</p>
+
+Checks order list workflows: status filters, secondary filters, date range search, order ID search, clear actions, export, pagination, and view-order paths.
+
+Command:
+
+```bash
+npm run test:orders
+```
+
+### 10. Portfolio Analysis
+
+<p align="center">
+  <img src="docs/screenshots/portfolio-analysis.svg" alt="Portfolio Analysis page screenshot" width="900">
+</p>
+
+Validates portfolio reporting screens with filters, charts or tables, download controls, pagination, and first-row safe actions.
+
+Command:
+
+```bash
+npm run test:portfolio
+```
+
+### 11. Accounts Management
+
+<p align="center">
+  <img src="docs/screenshots/accounts-management.svg" alt="Accounts Management page screenshot" width="900">
+</p>
+
+Checks account search, filters, tables, assignment/delegation flows, bulk upload surfaces, downloads, pagination, and row actions.
+
+Command:
+
+```bash
+npm run test:accounts
+```
+
+### 12. Campaigns
+
+<p align="center">
+  <img src="docs/screenshots/campaigns.svg" alt="Campaigns page screenshot" width="900">
+</p>
+
+One of the broadest modules: campaign creation, management, edit/delete, promo codes, offers, free delivery, store pinning, and fixed delivery fee management.
+
+Command:
+
+```bash
+npm run test:campaigns
+```
+
+### 13. Smart Boost Campaign
+
+<p align="center">
+  <img src="docs/screenshots/smart-boost-campaign.svg" alt="Smart Boost Campaign page screenshot" width="900">
+</p>
+
+Validates the smart boost list, filters, create form, export controls, row action menu, manage campaign, dashboard, top-up, and terminate actions.
+
+Command:
+
+```bash
+npm run test:boost
+```
+
+### 14. Driver KPI Slabs
+
+<p align="center">
+  <img src="docs/screenshots/driver-kpi-slabs.svg" alt="Driver KPI Slabs page screenshot" width="900">
+</p>
+
+Checks KPI slab schemes such as speed of delivery, redispatch rate, fines, block count, and average attendance.
+
+Command:
+
+```bash
+npm run test:kpi
+```
+
+### 15. Reels
+
+<p align="center">
+  <img src="docs/screenshots/reels.svg" alt="Reels page screenshot" width="900">
+</p>
+
+Validates media content management with create, validation, upload surfaces, row actions, view/edit/delete flows, search, filters, and pagination.
+
+Command:
+
+```bash
+npm run test:reels
+```
+
+### 16. TM Done Club
+
+#### Analytics
+
+<p align="center">
+  <img src="docs/screenshots/tm-done-club-analytics.svg" alt="TM Done Club Analytics page screenshot" width="900">
+</p>
+
+#### Subscription Plans
+
+<p align="center">
+  <img src="docs/screenshots/tm-done-club-plans.svg" alt="TM Done Club Subscription Plans page screenshot" width="900">
+</p>
+
+#### Subscription Reports
+
+<p align="center">
+  <img src="docs/screenshots/tm-done-club-subscriptions.svg" alt="TM Done Club Subscriptions Reports page screenshot" width="900">
+</p>
+
+#### Cancellation Reasons
+
+<p align="center">
+  <img src="docs/screenshots/tm-done-club-cancellation-reasons.svg" alt="TM Done Club Cancellation Reasons page screenshot" width="900">
+</p>
+
+TM Done Club tests cover analytics, subscription plans, subscription reports, cancellation reasons, tables, filters, CRUD surfaces, and safe skip behavior when backend data is unavailable.
+
+Command:
+
+```bash
+npm run test:club
+```
+
+### 17. User Notifications
+
+<p align="center">
+  <img src="docs/screenshots/user-notifications.svg" alt="User Notifications page screenshot" width="900">
+</p>
+
+Checks notification-management workflows: filters, table shell, create flow, phone-number upload, detail view, download actions, row actions, and pagination.
+
+Command:
+
+```bash
+npm run test:user-notifications
+```
+
+## Automation Flow
+
+<p align="center">
+  <img src="docs/screenshots/automation-flow.svg" alt="Playwright automation flow" width="900">
+</p>
+
+1. Developer pushes code or opens a pull request.
+2. GitHub Actions installs Node dependencies and Playwright browsers.
+3. Playwright signs in using repository secrets.
+4. Specs run with one worker for shared-environment stability.
+5. HTML reports, screenshots, videos, and traces are uploaded as artifacts.
+
+## CI/CD Report
+
+<p align="center">
+  <img src="docs/screenshots/ci-report.svg" alt="CI report preview" width="900">
+</p>
+
+Workflow file:
+
+```text
+.github/workflows/playwright.yml
+```
+
+The workflow runs on pushes and pull requests to `main` or `master`.
 
 ## Quick Start
 
@@ -284,6 +398,7 @@ npm run test:dashboard
 npm run test:reports
 npm run test:campaigns
 npm run test:boost
+npm run test:kpi
 npm run test:reels
 npm run test:club
 npm run test:user-notifications
@@ -296,9 +411,9 @@ npm run test:headed
 npm run test:debug
 ```
 
-## Environment Setup
+## Environment Variables
 
-The shared login helper reads:
+The login helper reads:
 
 ```text
 TMDONE_BASE_URL
@@ -312,15 +427,15 @@ For GitHub Actions, configure:
 - `TMDONE_PASSWORD`: repository secret
 - `TMDONE_BASE_URL`: repository variable, optional
 
-Do not commit credentials, tokens, private URLs, cookies, account data, or environment-specific secrets.
+Do not commit credentials, tokens, cookies, private URLs, or real account data.
 
-## Screenshot Rules
+## Screenshot Workflow
 
 Real UI screenshots are useful, but they must be cleaned before commit.
 
 Allowed:
 
-- Real UI layout with sensitive data blurred or replaced
+- Real UI layout with sensitive values blurred or replaced
 - Mock names such as `User A`, `Store 01`, `Campaign 01`
 - Generic amounts such as `100.00`, `250.00`, `1,000.00`
 - Redacted URLs and IDs
@@ -329,18 +444,23 @@ Allowed:
 Not allowed:
 
 - Real company names
-- Client names
-- Customer names, emails, phone numbers, addresses
-- Real order IDs, account IDs, campaign IDs, subscription IDs
-- Real revenue, budget, performance, or private business values
-- Tokens, cookies, passwords, API keys, internal URLs
+- Customer names, emails, phone numbers, or addresses
+- Real order IDs, account IDs, campaign IDs, or subscription IDs
+- Real revenue, budgets, performance, or private business values
+- Tokens, cookies, passwords, API keys, internal URLs, or credentials
 
-Recommended screenshot workflow:
+Recommended process:
 
-1. Capture the real UI locally.
+1. Capture the page locally.
 2. Blur or replace all sensitive values.
-3. Save the cleaned image under `docs/screenshots/`.
+3. Save the cleaned file under `docs/screenshots/` using the matching README filename.
 4. Review the image manually before committing.
+
+Screenshot helper:
+
+```bash
+node scripts/capture-readme-screenshots.mjs
+```
 
 ## Reports And Artifacts
 
@@ -354,12 +474,21 @@ blob-report/
 
 These folders are ignored by Git. CI artifacts are available from the GitHub Actions run page.
 
+## Test Case Document
+
+Full manual testcase documentation:
+
+[Open testcase document](https://docs.google.com/document/d/1Ygw7hUGV8gru99CCkvyM2YsT4JEum7l8b5V8GpcdkAQ/edit?tab=t.0#heading=h.v8182vllkw9o)
+
+Use the Google Doc as the manual testcase catalogue and this repository as the automated execution layer.
+
 ## Engineering Notes
 
 - Specs are grouped by feature area for easier triage.
-- Shared helpers centralize login, route navigation, dialogs, and safe actions.
-- Tests use stable selectors and explicit empty-state handling for UAT variability.
-- Destructive paths are guarded where possible to protect shared test environments.
+- Shared helpers centralize login, route navigation, dialogs, filters, and safe actions.
+- Tests prefer stable selectors and explicit empty-state handling for UAT variability.
+- Destructive paths are guarded or cancelled where possible to protect shared test environments.
+- Sequential execution is intentional because the target environment is shared and stateful.
 
 ## Before Pushing
 
