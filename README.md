@@ -1,8 +1,8 @@
 # TMDone Admin Console - Playwright Test Suite
 
-![TMDone Admin Console Screenshot](docs/screenshots/login.svg)
+![TMDone Admin Console Login](docs/screenshots/login.png)
 
-A full Playwright automation suite for the TMDone Admin Console.
+End-to-end Playwright automation suite for the TMDone Admin Console.
 
 ## Test Case Document
 
@@ -10,48 +10,47 @@ A full Playwright automation suite for the TMDone Admin Console.
 
 ## Project Overview
 
-This repository contains end-to-end tests for the TMDone Admin portal, including:
+This repository validates the main admin portal workflows against the UAT console at `https://consoledemo.uat.v3.dr.tmd1.org`.
 
-- Authentication
-- Dashboard
-- Vendor performance
-- Reports
-- Analysis
-- Store management
-- Offers
-- Order management
-- Portfolio analysis
+Covered areas:
+
+- Authentication and dashboard
+- Vendor performance, reports, and analysis
+- Store management and store ratings
+- Offers, campaigns, and smart boost campaigns
+- Order management and portfolio analysis
 - Accounts management
-- Campaigns
 - Driver KPI slabs
 - Reels
-- TM Done Club
+- TM Done Club analytics, plans, subscriptions, and cancellation reasons
 - User notifications
 
-## Page Screenshots
+## Real Page Screenshots
+
+The screenshots below are captured from the real TMDone Admin Console using `scripts/capture-readme-screenshots.mjs`.
 
 | Page | Screenshot |
 | --- | --- |
-| Login | ![Login page](docs/screenshots/login.svg) |
-| Dashboard | ![Dashboard page](docs/screenshots/dashboard.svg) |
-| Vendor Performance | ![Vendor Performance page](docs/screenshots/vendor-performance.svg) |
-| Reports | ![Reports page](docs/screenshots/reports.svg) |
-| Analysis | ![Analysis page](docs/screenshots/analysis.svg) |
-| Stores | ![Stores page](docs/screenshots/stores.svg) |
-| Store Ratings | ![Store Ratings page](docs/screenshots/store-ratings.svg) |
-| Offers | ![Offers page](docs/screenshots/offers.svg) |
-| Order Management | ![Order Management page](docs/screenshots/order-management.svg) |
-| Portfolio Analysis | ![Portfolio Analysis page](docs/screenshots/portfolio-analysis.svg) |
-| Accounts Management | ![Accounts Management page](docs/screenshots/accounts-management.svg) |
-| Campaigns | ![Campaigns page](docs/screenshots/campaigns.svg) |
-| Smart Boost Campaign | ![Smart Boost Campaign page](docs/screenshots/smart-boost-campaign.svg) |
-| Driver KPI Slabs | ![Driver KPI Slabs page](docs/screenshots/driver-kpi-slabs.svg) |
-| Reels | ![Reels page](docs/screenshots/reels.svg) |
-| TM Done Club Analytics | ![TM Done Club Analytics page](docs/screenshots/tm-done-club-analytics.svg) |
-| TM Done Club Plans | ![TM Done Club Plans page](docs/screenshots/tm-done-club-plans.svg) |
-| TM Done Club Subscriptions | ![TM Done Club Subscriptions page](docs/screenshots/tm-done-club-subscriptions.svg) |
-| TM Done Club Cancellation Reasons | ![TM Done Club Cancellation Reasons page](docs/screenshots/tm-done-club-cancellation-reasons.svg) |
-| User Notifications | ![User Notifications page](docs/screenshots/user-notifications.svg) |
+| Login | ![Login page](docs/screenshots/login.png) |
+| Dashboard | ![Dashboard page](docs/screenshots/dashboard.png) |
+| Vendor Performance | ![Vendor Performance page](docs/screenshots/vendor-performance.png) |
+| Reports | ![Reports page](docs/screenshots/reports.png) |
+| Analysis | ![Analysis page](docs/screenshots/analysis.png) |
+| Stores | ![Stores page](docs/screenshots/stores.png) |
+| Store Ratings | ![Store Ratings page](docs/screenshots/store-ratings.png) |
+| Offers | ![Offers page](docs/screenshots/offers.png) |
+| Order Management | ![Order Management page](docs/screenshots/order-management.png) |
+| Portfolio Analysis | ![Portfolio Analysis page](docs/screenshots/portfolio-analysis.png) |
+| Accounts Management | ![Accounts Management page](docs/screenshots/accounts-management.png) |
+| Campaigns | ![Campaigns page](docs/screenshots/campaigns.png) |
+| Smart Boost Campaign | ![Smart Boost Campaign page](docs/screenshots/smart-boost-campaign.png) |
+| Driver KPI Slabs | ![Driver KPI Slabs page](docs/screenshots/driver-kpi-slabs.png) |
+| Reels | ![Reels page](docs/screenshots/reels.png) |
+| TM Done Club Analytics | ![TM Done Club Analytics page](docs/screenshots/tm-done-club-analytics.png) |
+| TM Done Club Plans | ![TM Done Club Plans page](docs/screenshots/tm-done-club-plans.png) |
+| TM Done Club Subscriptions | ![TM Done Club Subscriptions page](docs/screenshots/tm-done-club-subscriptions.png) |
+| TM Done Club Cancellation Reasons | ![TM Done Club Cancellation Reasons page](docs/screenshots/tm-done-club-cancellation-reasons.png) |
+| User Notifications | ![User Notifications page](docs/screenshots/user-notifications.png) |
 
 ## Quick Start
 
@@ -79,9 +78,33 @@ This repository contains end-to-end tests for the TMDone Admin portal, including
 
 - `npm run test:auth` - run authentication tests
 - `npm run test:dashboard` - run dashboard tests
+- `npm run test:vendor` - run vendor performance tests
 - `npm run test:reports` - run report tests
+- `npm run test:analysis` - run analysis tests
+- `npm run test:stores` - run store tests
+- `npm run test:ratings` - run store ratings tests
+- `npm run test:offers` - run offer tests
+- `npm run test:orders` - run order management tests
+- `npm run test:portfolio` - run portfolio analysis tests
+- `npm run test:accounts` - run accounts management tests
+- `npm run test:campaigns` - run campaign tests
+- `npm run test:boost` - run smart boost campaign tests
+- `npm run test:kpi` - run driver KPI slab tests
+- `npm run test:reels` - run reels tests
+- `npm run test:club` - run TM Done Club tests
+- `npm run test:user-notifications` - run user notification tests
 - `npm run test:all` - run all tests
 - `npm run report` - show the HTML report
+
+## Screenshot Capture
+
+Run this command to refresh the README screenshots from the live portal:
+
+```bash
+node scripts/capture-readme-screenshots.mjs
+```
+
+Generated screenshots are saved in `docs/screenshots/` as PNG files.
 
 ## Playwright Configuration
 
@@ -94,12 +117,13 @@ This repository contains end-to-end tests for the TMDone Admin portal, including
 ## Folder Structure
 
 - `tests/` - Playwright test suites
-- `docs/screenshots/` - system screenshots used in documentation
+- `tests/helpers/` - shared login, navigation, report, and utility helpers
+- `tests/fixtures/` - test upload files and sample assets
+- `docs/screenshots/` - real screenshots used in this README
+- `scripts/capture-readme-screenshots.mjs` - README screenshot capture script
 - `playwright.config.js` - Playwright settings
 - `package.json` - npm scripts and dependencies
 
 ## Notes
 
 Use `HEADED=true npx playwright test` to run tests with the browser visible.
-
-# TMDONE_AM_Portal-

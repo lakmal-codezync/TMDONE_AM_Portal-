@@ -31,6 +31,7 @@ const pages = [
   { name: 'TM Done Club Plans', slug: 'tm-done-club-plans', route: '#/home/tm-done-club/plans' },
   { name: 'TM Done Club Subscriptions', slug: 'tm-done-club-subscriptions', route: '#/home/tm-done-club/subscriptions' },
   { name: 'TM Done Club Cancellation Reasons', slug: 'tm-done-club-cancellation-reasons', route: '#/home/tm-done-club/cancellation-reasons' },
+  { name: 'User Notifications', slug: 'user-notifications', route: '#/home/user-notifications' },
 ];
 
 async function waitForNoSpinner(page) {
