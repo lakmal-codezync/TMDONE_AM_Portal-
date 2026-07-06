@@ -6,3 +6,11 @@ node_modules/
 /blob-report/
 /playwright/.cache/
 /playwright/.auth/
+
+# Debug artifacts downloaded from GitHub Actions
+/.pw-report-extracted/
+/.pw-report.zip
+/github-run-*.log
+/github-run-*-report/
+/github-run-*-report-json/
+/github-run-*-report.zip

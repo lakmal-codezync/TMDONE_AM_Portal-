@@ -10,7 +10,6 @@ import { test, expect } from '@playwright/test';
 import { loginToApp, goToPage } from '../helpers/loginHelper.js';
 
 const SMART_BOOST_URL = '#/home/smart-boost-campaign/list';
-const SMART_BOOST_STORE = 'Cafe Asiana';
 const BOOST_BUDGET = '25';
 const TOP_UP_AMOUNT = '5';
 
@@ -48,6 +47,12 @@ class SmartBoostCampaignsPage {
 
   get rows() {
     return this.page.locator('mat-row, tbody tr, .datatable-body-row').filter({ visible: true });
+  }
+
+  get emptyState() {
+    return this.page
+      .locator(':text-matches("No data|No records|No results|No campaigns found", "i")')
+      .first();
   }
 
   activeDialog() {
@@ -132,9 +137,7 @@ class SmartBoostCampaignsPage {
       ).toBeVisible({ timeout: 15000 });
     }
 
-    const firstRowOrEmpty = this.rows
-      .first()
-      .or(this.page.locator(':text("No data"), :text("No records"), :text("No results")').first());
+    const firstRowOrEmpty = this.rows.first().or(this.emptyState);
     await expect(firstRowOrEmpty).toBeVisible({ timeout: 30000 });
 
     if (await this.rows.first().isVisible().catch(() => false)) {
@@ -157,7 +160,7 @@ class SmartBoostCampaignsPage {
     await searchInput.fill('a');
     await this.clickSearchButton();
     await this.page.waitForTimeout(1500);
-    await expect(this.table.or(this.page.locator(':text("No data"), :text("No records"), :text("No results")').first()).first()).toBeVisible();
+    await expect(this.table.or(this.emptyState).first()).toBeVisible();
 
     await this.clickClearButton();
     await this.verifyPagination();
@@ -177,7 +180,7 @@ class SmartBoostCampaignsPage {
     await expect(dialog.locator('input[type="number"], input[formcontrolname*="budget" i]').filter({ visible: true }).first()).toBeVisible({ timeout: 10000 });
     await expect(dialog).toContainText(/Store|Start Date|Budget|CPC Amount/i);
 
-    const storeSelected = await this.selectDropdown(dialog, /Store/i, { optional: true, searchText: SMART_BOOST_STORE });
+    const storeSelected = await this.selectDropdown(dialog, /Store/i, { optional: true, searchText: 'a' });
     await this.fillFirstVisible(dialog, [
       'input[formcontrolname*="startDate" i]',
       'input[placeholder*="Start Date" i]',
@@ -244,6 +247,10 @@ class SmartBoostCampaignsPage {
     await this.page.keyboard.press('Escape').catch(() => {});
   }
 
+  /**
+   * @param {RegExp} actionLabel
+   * @param {string | RegExp | readonly (string | RegExp)[]} expectedText
+   */
   async verifyNavigationAction(actionLabel, expectedText) {
     if (!(await this.hasRows())) return;
 
@@ -443,7 +450,7 @@ class SmartBoostCampaignsPage {
   async hasRows() {
     const hasAnyRows = await this.rows.first().isVisible({ timeout: 30000 }).catch(() => false);
     if (!hasAnyRows) {
-      await expect(this.page.locator(':text("No data"), :text("No records"), :text("No results"), body').first()).toBeVisible();
+      await expect(this.emptyState.or(this.page.locator('body')).first()).toBeVisible();
     }
     return hasAnyRows;
   }

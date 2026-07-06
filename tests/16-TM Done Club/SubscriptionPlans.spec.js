@@ -7,6 +7,9 @@ const PLAN_NAME = `Auto Plan ${RUN_ID}`;
 const PLAN_NAME_EDITED = `Auto Plan ${RUN_ID} Edited`;
 
 class SubscriptionPlansPage extends TMDoneClubPage {
+  /**
+   * @param {import("playwright-core").Page} page
+   */
   constructor(page) {
     super(page, {
       route: TM_DONE_CLUB_ROUTES.plans,
@@ -15,6 +18,9 @@ class SubscriptionPlansPage extends TMDoneClubPage {
     });
   }
 
+  /**
+   * @param {string} name
+   */
   async fillPlanDialog(name) {
     const dialog = this.activeDialog();
     await this.fillFirstVisible(dialog, [
@@ -24,11 +30,31 @@ class SubscriptionPlansPage extends TMDoneClubPage {
       'input[type="text"]',
     ], name);
     await this.fillFirstVisible(dialog, [
+      'input[formcontrolname*="arabic" i][formcontrolname*="name" i]',
+      'input[placeholder*="Arabic Name" i]',
+      'mat-form-field:has-text("Arabic Name") input',
+    ], name);
+    await this.fillFirstVisible(dialog, [
       'textarea[formcontrolname*="description" i]',
       'textarea[placeholder*="Description" i]',
       'mat-form-field:has-text("Description") textarea',
       'textarea',
     ], 'Created by Playwright automation');
+    await this.fillFirstVisible(dialog, [
+      'textarea[formcontrolname*="arabic" i][formcontrolname*="description" i]',
+      'textarea[placeholder*="Arabic Description" i]',
+      'mat-form-field:has-text("Arabic Description") textarea',
+    ], 'Created by Playwright automation');
+    await this.fillFirstVisible(dialog, [
+      'textarea[formcontrolname*="next" i][formcontrolname*="description" i]',
+      'textarea[placeholder*="Next Plan Description" i]',
+      'mat-form-field:has-text("Next Plan Description") textarea',
+    ], 'Next subscription plan description');
+    await this.fillFirstVisible(dialog, [
+      'textarea[formcontrolname*="next" i][formcontrolname*="arabic" i]',
+      'textarea[placeholder*="Next Plan Arabic Description" i]',
+      'mat-form-field:has-text("Next Plan Arabic Description") textarea',
+    ], 'Next subscription plan description');
     await this.fillFirstVisible(dialog, [
       'input[formcontrolname*="amount" i]',
       'input[formcontrolname*="price" i]',
@@ -40,9 +66,15 @@ class SubscriptionPlansPage extends TMDoneClubPage {
       'input[formcontrolname*="duration" i]',
       'input[placeholder*="Duration" i]',
     ], '30');
+    // @ts-ignore
+    await this.selectDropdown(dialog, /billing|cycle/i, 'Monthly').catch(() => false);
+    // @ts-ignore
     await this.selectDropdown(dialog, /status|type|plan/i, 0).catch(() => false);
   }
 
+  /**
+   * @param {string} name
+   */
   async searchPlan(name) {
     const searchInput = this.page
       .locator('input[placeholder*="Search" i], input[aria-label*="search" i], input[matinput], input.mat-input-element')
@@ -55,11 +87,23 @@ class SubscriptionPlansPage extends TMDoneClubPage {
     return true;
   }
 
+  /**
+   * @param {string} name
+   */
+  async searchedPlanRow(name) {
+    await this.searchPlan(name);
+    const row = this.rows.first();
+    if (!(await row.isVisible({ timeout: 10000 }).catch(() => false))) return null;
+    const rowText = await row.innerText().catch(() => '');
+    return rowText.includes(name) ? row : null;
+  }
+
+  /**
+   * @param {RegExp} label
+   */
   async rowAction(label) {
     const row = this.rows.first();
-    if (!(await row.isVisible({ timeout: 20000 }).catch(() => false))) {
-      return false;
-    }
+    await expect(row).toBeVisible({ timeout: 20000 });
 
     const menuTrigger = row
       .locator('button:has(mat-icon:has-text("more_vert")), button:has(mat-icon:has-text("more_horiz")), .mat-menu-trigger, [aria-label*="More" i]')
@@ -91,81 +135,56 @@ class SubscriptionPlansPage extends TMDoneClubPage {
   }
 
   async createPlan() {
-    const exactCreateButton = this.page.getByRole('button', { name: /Create Subscription Plan/i }).first();
-    if (!(await exactCreateButton.isVisible({ timeout: 20000 }).catch(() => false))) {
-      test.info().annotations.push({ type: 'info', description: 'Create subscription plan button was not visible in this environment.' });
-      await this.verifyPageLoaded();
-      return false;
+    await expect(this.createButton).toBeVisible({ timeout: 20000 });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await this.createButton.click({ force: true });
+      await this.page.waitForTimeout(1500);
+      if (await this.activeDialog().isVisible().catch(() => false)) break;
     }
-    await exactCreateButton.click({ force: true });
-    await this.page.waitForTimeout(1500);
-
-    if (!(await this.activeDialog().isVisible().catch(() => false))) {
-      await this.waitForReady();
-      await exactCreateButton.click({ force: true });
+    await expect(this.activeDialog()).toBeVisible({ timeout: 15000 });
+    await this.fillPlanDialog(PLAN_NAME);
+    const stepDialog = this.activeDialog();
+    const nextButton = await this.enabledButton(stepDialog, /Next|Continue/i);
+    if (await nextButton.isVisible().catch(() => false)) {
+      await expect(nextButton).toBeEnabled({ timeout: 15000 });
+      await nextButton.click({ force: true });
       await this.page.waitForTimeout(1500);
     }
 
-    if (!(await this.activeDialog().isVisible({ timeout: 15000 }).catch(() => false))) {
-      test.info().annotations.push({ type: 'info', description: 'Create subscription plan dialog did not open.' });
-      await this.verifyPageLoaded();
-      return false;
-    }
-    await this.fillPlanDialog(PLAN_NAME);
     const saveButton = await this.enabledButton(this.activeDialog(), /Create|Save|Submit|Add/i);
-    if (!(await saveButton.isVisible({ timeout: 10000 }).catch(() => false))) {
-      console.log('INFO: Subscription plan dialog opened, but no create/save action was visible.');
-      await this.closeDialog();
-      await this.verifyPageLoaded();
-      return false;
-    }
-    if (!(await saveButton.isEnabled({ timeout: 15000 }).catch(() => false))) {
-      console.log('INFO: Subscription plan create action stayed disabled after filling available fields.');
-      await this.closeDialog();
-      await this.verifyPageLoaded();
-      return false;
-    }
+    await expect(saveButton).toBeVisible({ timeout: 10000 });
+    await expect(saveButton).toBeEnabled({ timeout: 15000 });
     await saveButton.click({ force: true });
     await this.page.waitForTimeout(2500);
-    return true;
   }
 
   async editPlan() {
-    await this.searchPlan(PLAN_NAME);
+    const targetRow = await this.searchedPlanRow(PLAN_NAME);
+    test.skip(!targetRow, `Created subscription plan "${PLAN_NAME}" was not returned by search, so edit is skipped safely.`);
+
     const opened = await this.rowAction(/Edit|Update/i);
-    if (!opened) {
-      console.log('INFO: No created subscription plan row was available to edit.');
-      await this.verifyPageLoaded();
-      return false;
-    }
+    expect(opened).toBeTruthy();
     await expect(this.activeDialog()).toBeVisible({ timeout: 15000 });
     await this.fillPlanDialog(PLAN_NAME_EDITED);
+    const nextButton = await this.enabledButton(this.activeDialog(), /Next|Continue/i);
+    if (await nextButton.isVisible().catch(() => false)) {
+      await expect(nextButton).toBeEnabled({ timeout: 15000 });
+      await nextButton.click({ force: true });
+      await this.page.waitForTimeout(1500);
+    }
     const updateButton = await this.enabledButton(this.activeDialog(), /Update|Save|Submit/i);
-    if (!(await updateButton.isVisible({ timeout: 10000 }).catch(() => false))) {
-      console.log('INFO: Subscription plan edit dialog opened, but no update action was visible.');
-      await this.closeDialog();
-      await this.verifyPageLoaded();
-      return false;
-    }
-    if (!(await updateButton.isEnabled({ timeout: 15000 }).catch(() => false))) {
-      console.log('INFO: Subscription plan update action stayed disabled after filling available fields.');
-      await this.closeDialog();
-      await this.verifyPageLoaded();
-      return false;
-    }
+    await expect(updateButton).toBeVisible({ timeout: 10000 });
+    await expect(updateButton).toBeEnabled({ timeout: 15000 });
     await updateButton.click({ force: true });
     await this.page.waitForTimeout(2500);
-    return true;
   }
 
   async deletePlan() {
-    await this.searchPlan(PLAN_NAME_EDITED);
+    const targetRow = await this.searchedPlanRow(PLAN_NAME_EDITED);
+    test.skip(!targetRow, `Edited subscription plan "${PLAN_NAME_EDITED}" was not returned by search, so delete is skipped safely.`);
+
     const opened = await this.rowAction(/Delete|Remove/i);
-    if (!opened) {
-      console.log('INFO: No edited subscription plan row was available to delete.');
-      await this.verifyPageLoaded();
-      return false;
-    }
+    expect(opened).toBeTruthy();
     const confirmButton = this.page
       .locator('.swal2-confirm, button:has-text("Yes"), button:has-text("Confirm"), button:has-text("Delete")')
       .filter({ visible: true })
@@ -174,25 +193,14 @@ class SubscriptionPlansPage extends TMDoneClubPage {
       await confirmButton.click({ force: true });
       await this.page.waitForTimeout(2500);
     }
-    return true;
   }
 }
 
 test.describe.serial('TM Done Club Subscription Plans', () => {
   /** @type {SubscriptionPlansPage} */
   let plans;
-  let plansAvailable = true;
-
-  test.beforeAll(async ({ browser }) => {
-    const page = await browser.newPage();
-    const probe = new SubscriptionPlansPage(page);
-    await probe.goto();
-    plansAvailable = await probe.isSectionAvailable();
-    await page.close();
-  });
 
   test.beforeEach(async ({ page }) => {
-    test.skip(!plansAvailable, 'Subscription Plans redirects to Campaigns in this environment, so CRUD cannot be exercised here right now.');
     plans = new SubscriptionPlansPage(page);
     await plans.goto();
   });
