@@ -27,7 +27,7 @@ Covered areas:
 
 ## Real Page Screenshots
 
-The screenshots below are captured from the real TMDone Admin Console using `scripts/capture-readme-screenshots.mjs`.
+The screenshots below are captured from the real TMDone Admin Console as 1440x900 viewport previews using `scripts/capture-readme-screenshots.mjs`.
 
 | Page | Screenshot |
 | --- | --- |
@@ -104,7 +104,7 @@ Run this command to refresh the README screenshots from the live portal:
 node scripts/capture-readme-screenshots.mjs
 ```
 
-Generated screenshots are saved in `docs/screenshots/` as PNG files.
+Generated screenshots are saved in `docs/screenshots/` as 1440x900 PNG files.
 
 ## Playwright Configuration
 

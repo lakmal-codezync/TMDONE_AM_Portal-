@@ -84,7 +84,7 @@ async function capturePage(page, item) {
   await page.waitForTimeout(2000);
   await page.screenshot({
     path: path.join(screenshotDir, `${item.slug}.png`),
-    fullPage: true,
+    fullPage: false,
   });
   console.log(`Captured ${item.name}: docs/screenshots/${item.slug}.png`);
 }
