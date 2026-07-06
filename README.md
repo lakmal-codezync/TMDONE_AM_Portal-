@@ -1,42 +1,70 @@
 # Admin Portal Playwright Automation
 
-End-to-end Playwright automation suite for a modern admin portal. The project is organized as a feature-by-feature regression pack that checks sign-in, dashboards, reporting, operational tables, campaign tools, media workflows, and subscription-style modules.
+> A privacy-safe end-to-end automation suite for a feature-rich admin portal, built with Playwright, JavaScript, and GitHub Actions.
 
-This repository is prepared for engineering review, CI execution, and safe public sharing. Real client data, company names, user records, production URLs, credentials, and screenshots with identifiable business information must not be committed.
+This repository demonstrates a complete QA automation system for an admin-style web application. It covers authentication, dashboards, reporting, data tables, campaigns, media flows, subscription modules, notification flows, CI execution, and HTML report artifacts.
 
-## What This Suite Does
+The README uses sanitized mock screenshots only. No company names, client names, real users, real order data, credentials, private URLs, or business-sensitive values are shown.
 
-The suite behaves like a careful QA operator moving through the portal:
+## System Preview
 
-- Signs in and verifies authenticated navigation.
-- Checks dashboards, cards, filters, tables, pagination, dialogs, and exports.
-- Exercises safe CRUD-style flows without intentionally damaging real data.
-- Handles UAT variability such as empty states, permissions, redirects, and optional backend data.
-- Captures Playwright reports, screenshots, videos, and traces only as local or CI artifacts.
+<p align="center">
+  <img src="docs/screenshots/sanitized-dashboard.svg" alt="Sanitized admin portal dashboard mock screenshot" width="900">
+</p>
 
-## Coverage Map
+The suite models the portal as a collection of operational workspaces. Each feature area has focused Playwright specs, shared helpers, stable navigation utilities, and safe handling for dialogs, filters, empty states, and optional backend data.
+
+## Test Case Document
+
+Full testcase documentation is maintained here:
+
+[Open testcase document](https://docs.google.com/document/d/1Ygw7hUGV8gru99CCkvyM2YsT4JEum7l8b5V8GpcdkAQ/edit?tab=t.0#heading=h.v8182vllkw9o)
+
+Use the document as the manual coverage map, and this repo as the executable automation layer.
+
+## Automation Flow
+
+<p align="center">
+  <img src="docs/screenshots/automation-flow.svg" alt="Sanitized Playwright automation flow diagram" width="900">
+</p>
+
+1. GitHub Actions starts on push or pull request.
+2. Node dependencies and Playwright browsers are installed.
+3. The test suite signs in using repository secrets.
+4. Feature specs run one worker at a time for stability.
+5. Reports, screenshots, videos, and traces are uploaded as CI artifacts.
+
+## What This Suite Covers
 
 ```text
 tests/
-  01-Auth/                    Sign-in and authentication checks
-  02-Dashboard/               Dashboard widgets and navigation
-  03-VendorPerformance/       Performance tables and filters
-  04-Reports/                 Operational reports and exports
-  05-Analysis/                Analytics dashboards and charts
-  06-Stores/                  Store search, filters, and actions
-  07-Stores Ratings/          Ratings filters and table behavior
-  08-Offers/                  Offer create, edit, delete, search
-  09-Order Management/        Order list and view-order flows
-  10-Portfolio Analysis/      Portfolio reporting checks
-  11-Accounts Management/     Account table and action coverage
-  12-Campaigns/               Campaign, promo, delivery, pinning flows
-  13-Smart Boost Campaign/    Boost campaign workflows
-  14-Driver KPI Slabs/        Slab scheme configuration flows
-  15-Reels/                   Media/reels management flows
-  16-TM Done Club/            Analytics, plans, subscriptions, reasons
-  17-User Notifications/      Notification workflow coverage
-  helpers/                    Shared login and navigation utilities
+  01-Auth/                    Sign-in, validation, and session checks
+  02-Dashboard/               Dashboard cards, widgets, and navigation
+  03-VendorPerformance/       Performance tables, filters, and paging
+  04-Reports/                 Report filters, tabs, and export behavior
+  05-Analysis/                Analytics pages and chart stability
+  06-Stores/                  Store search, filters, and row actions
+  07-Stores Ratings/          Rating filters, exports, and tables
+  08-Offers/                  Offer create, update, delete, and search
+  09-Order Management/        Order list, status filters, and view flows
+  10-Portfolio Analysis/      Portfolio reporting and table behavior
+  11-Accounts Management/     Account search, actions, and assignment flows
+  12-Campaigns/               Campaigns, promo codes, delivery, pinning
+  13-Smart Boost Campaign/    Boost campaign create, actions, top-up, terminate
+  14-Driver KPI Slabs/        Slab schemes, CRUD paths, and search
+  15-Reels/                   Media management, dialogs, filters, row actions
+  16-TM Done Club/            Analytics, plans, subscriptions, cancellation reasons
+  17-User Notifications/      Notification workflows and table checks
+  helpers/                    Shared login, routing, and UI helpers
 ```
+
+## CI/CD Report Preview
+
+<p align="center">
+  <img src="docs/screenshots/ci-report.svg" alt="Sanitized GitHub Actions and Playwright report mock screenshot" width="900">
+</p>
+
+The CI pipeline runs the same Playwright suite used locally and keeps the HTML report available as a downloadable artifact.
 
 ## Tech Stack
 
@@ -54,7 +82,7 @@ npm ci
 npx playwright install
 ```
 
-Run the full suite:
+Run everything:
 
 ```bash
 npm test
@@ -66,7 +94,7 @@ Open the latest HTML report:
 npm run report
 ```
 
-## Useful Test Commands
+## Useful Commands
 
 ```bash
 npm run test:auth
@@ -86,9 +114,9 @@ npm run test:headed
 npm run test:debug
 ```
 
-## Environment Variables
+## Environment Setup
 
-The shared login helper reads these values:
+The current helper reads these environment variables:
 
 ```text
 TMDONE_BASE_URL
@@ -96,48 +124,54 @@ TMDONE_EMAIL
 TMDONE_PASSWORD
 ```
 
-For GitHub Actions, set them as repository secrets or variables:
+For GitHub Actions, configure them in repository settings:
 
 - `TMDONE_EMAIL`: repository secret
 - `TMDONE_PASSWORD`: repository secret
 - `TMDONE_BASE_URL`: repository variable, optional
 
-Do not commit real credentials, personal access tokens, private URLs, or account-specific values.
+Never commit credentials, private URLs, personal access tokens, cookies, real account data, or environment-specific secrets.
 
-## CI/CD
+## GitHub Actions
 
-The GitHub Actions workflow lives at:
+Workflow file:
 
 ```text
 .github/workflows/playwright.yml
 ```
 
-It runs on pushes and pull requests to `main` or `master`:
+The workflow runs on pushes and pull requests to `main` or `master`:
 
-1. Checks out the repo.
-2. Installs Node dependencies with `npm ci`.
-3. Installs Playwright browsers.
-4. Runs `npx playwright test`.
-5. Uploads the Playwright HTML report as an artifact.
+1. Checkout repository.
+2. Install dependencies with `npm ci`.
+3. Install Playwright browsers.
+4. Run `npx playwright test`.
+5. Upload the Playwright HTML report.
 
-## Privacy And Screenshots
+## Privacy Rules For Screenshots
 
-Screenshots are not embedded in this README by design.
+Screenshots in this repository must be sanitized before commit.
 
-If screenshots are ever added for documentation, they must be sanitized first:
+Allowed:
 
-- No company names.
-- No client names.
-- No customer names, phone numbers, emails, addresses, order IDs, or account IDs.
-- No real revenue, budget, campaign, or subscription values.
-- No internal URLs, tokens, cookies, headers, or credentials.
-- Use mock data, blurred/redacted images, or recreated demo screens only.
+- Mock data
+- Redacted UI captures
+- Recreated demo screens
+- Generic labels such as "User A", "Store 01", "Order 1001"
 
-Generated screenshots should stay local or in CI artifacts unless they have been reviewed and redacted.
+Not allowed:
+
+- Company names
+- Client names
+- Customer names, phone numbers, emails, addresses, order IDs, account IDs
+- Real revenue, budget, campaign, subscription, or performance values
+- Internal URLs, tokens, cookies, headers, passwords, API keys
+
+Generated Playwright screenshots should normally remain in `test-results/`, `playwright-report/`, or CI artifacts. Only reviewed and sanitized documentation images should be committed.
 
 ## Reports And Artifacts
 
-Local Playwright outputs are generated under:
+Local Playwright outputs:
 
 ```text
 test-results/
@@ -145,18 +179,18 @@ playwright-report/
 blob-report/
 ```
 
-These folders are ignored by Git. CI artifacts are available from the GitHub Actions run summary.
+These folders are ignored by Git. CI artifacts can be downloaded from the GitHub Actions run page.
 
-## Design Notes
+## Engineering Notes
 
-- Tests are grouped by portal module to keep failures easy to triage.
-- Shared helpers centralize login, routing, dialog handling, and safe UI actions.
-- Specs prefer resilient selectors and explicit empty-state handling for UAT stability.
-- Destructive flows are guarded where possible so the suite can be run against shared test environments.
+- Specs are grouped by feature area for fast triage.
+- Shared helpers centralize login, route navigation, dialogs, and safe actions.
+- Tests use stable selectors, explicit waits, and empty-state handling where the UAT environment can vary.
+- Destructive paths are guarded where possible so shared test data is protected.
 
-## Maintainer Notes
+## Before Pushing
 
-Before pushing:
+Recommended smoke checks:
 
 ```bash
 git status --short
@@ -165,7 +199,7 @@ npm run test:reels
 npx playwright test SubscriptionPlans.spec.js
 ```
 
-For full release confidence, run:
+For full confidence:
 
 ```bash
 npm test

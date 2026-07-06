@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">Sanitized CI report mock screenshot</title>
+  <desc id="desc">A generic GitHub Actions and Playwright report illustration with mock status values.</desc>
+  <rect width="1200" height="620" fill="#f8fafc"/>
+  <rect x="45" y="40" width="1110" height="540" rx="22" fill="#ffffff" stroke="#dbe3ef"/>
+  <rect x="45" y="40" width="1110" height="76" rx="22" fill="#0f172a"/>
+  <text x="82" y="88" fill="#ffffff" font-family="Arial, sans-serif" font-size="25" font-weight="700">GitHub Actions - Playwright Tests</text>
+  <text x="902" y="88" fill="#bbf7d0" font-family="Arial, sans-serif" font-size="16" font-weight="700">Sanitized Preview</text>
+  <g font-family="Arial, sans-serif">
+    <rect x="85" y="150" width="300" height="118" rx="16" fill="#ecfdf5" stroke="#bbf7d0"/>
+    <text x="115" y="196" fill="#15803d" font-size="18" font-weight="700">Workflow</text>
+    <text x="115" y="230" fill="#0f172a" font-size="26" font-weight="700">Ready</text>
+    <rect x="450" y="150" width="300" height="118" rx="16" fill="#eff6ff" stroke="#bfdbfe"/>
+    <text x="480" y="196" fill="#1d4ed8" font-size="18" font-weight="700">Browser</text>
+    <text x="480" y="230" fill="#0f172a" font-size="26" font-weight="700">Chromium</text>
+    <rect x="815" y="150" width="300" height="118" rx="16" fill="#fff7ed" stroke="#fed7aa"/>
+    <text x="845" y="196" fill="#c2410c" font-size="18" font-weight="700">Artifacts</text>
+    <text x="845" y="230" fill="#0f172a" font-size="26" font-weight="700">HTML Report</text>
+  </g>
+  <rect x="85" y="315" width="1030" height="195" rx="16" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="115" y="356" fill="#111827" font-family="Arial, sans-serif" font-size="20" font-weight="700">Pipeline Steps</text>
+  <g font-family="Arial, sans-serif" font-size="16">
+    <circle cx="130" cy="400" r="9" fill="#22c55e"/>
+    <text x="155" y="406" fill="#334155">Checkout repository</text>
+    <circle cx="130" cy="440" r="9" fill="#22c55e"/>
+    <text x="155" y="446" fill="#334155">Install dependencies</text>
+    <circle cx="520" cy="400" r="9" fill="#22c55e"/>
+    <text x="545" y="406" fill="#334155">Install Playwright browsers</text>
+    <circle cx="520" cy="440" r="9" fill="#22c55e"/>
+    <text x="545" y="446" fill="#334155">Run feature suites</text>
+    <circle cx="865" cy="400" r="9" fill="#22c55e"/>
+    <text x="890" y="406" fill="#334155">Upload report artifact</text>
+  </g>
+  <text x="115" y="550" fill="#64748b" font-family="Arial, sans-serif" font-size="14">No real run IDs, private URLs, users, or business records are shown.</text>
+</svg>
