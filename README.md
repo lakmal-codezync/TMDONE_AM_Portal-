@@ -25,7 +25,7 @@ Covered areas:
 - TM Done Club analytics, plans, subscriptions, and cancellation reasons
 - User notifications
 
-## Real Page Screenshots
+##  Page Screenshots
 
 The screenshots below are captured from the real TMDone Admin Console as 1440x900 viewport previews using `scripts/capture-readme-screenshots.mjs`.
 
