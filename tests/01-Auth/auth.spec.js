@@ -1,7 +1,7 @@
 
 
 import { test, expect } from '@playwright/test';
-import { CREDENTIALS } from '../helpers/loginHelper.js';
+import { CREDENTIALS, requireCredentials } from '../helpers/loginHelper.js';
 
 // ===================== CONSTANTS ============================
 const LOGIN_URL = CREDENTIALS.loginUrl;
@@ -16,6 +16,10 @@ const passwordInput = (page) => page.locator('input[type="password"]').first();
 /** @param {import('@playwright/test').Page} page */
 const loginButton = (page) =>
   page.locator('button[type="submit"], button:has-text("Sign in"), button:has-text("SIGN IN")').first();
+
+test.beforeEach(() => {
+  requireCredentials();
+});
 
 /** @param {import('@playwright/test').Page} page */
 async function openLoginPage(page) {

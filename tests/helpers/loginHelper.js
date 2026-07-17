@@ -7,15 +7,22 @@
 import { expect, test } from '@playwright/test';
 
 // ===================== CONSTANTS ============================
-// Centralized credentials. Updating these values applies to all tests.
+// Centralized credentials. Keep sensitive values in environment variables
+// or GitHub Actions secrets, never in source control.
 export const CREDENTIALS = {
-  email: process.env.TMDONE_EMAIL || 'nimsara@codezync.com',
-  password: process.env.TMDONE_PASSWORD || '123123',
+  email: process.env.TMDONE_EMAIL || '',
+  password: process.env.TMDONE_PASSWORD || '',
   baseUrl: process.env.TMDONE_BASE_URL || 'https://consoledemo.uat.v3.dr.tmd1.org',
   get loginUrl() {
     return `${this.baseUrl}/#/authentication/signin`;
   },
 };
+
+export function requireCredentials() {
+  if (!CREDENTIALS.email || !CREDENTIALS.password) {
+    test.skip(true, 'Set TMDONE_EMAIL and TMDONE_PASSWORD in environment variables or GitHub Actions secrets.');
+  }
+}
 
 // ============================================================
 // loginToApp() - Reusable sign-in helper.
@@ -100,6 +107,7 @@ async function getSweetAlertText(page) {
  * @param {import("playwright-core").Page} page
  */
 export async function loginToApp(page) {
+  requireCredentials();
   const isLoggedIn = () => page.url().includes('home') || page.url().includes('dashboard');
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
