@@ -5,6 +5,83 @@
 // ============================================================
 
 import { expect, test } from '@playwright/test';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const AUTH_STATE_PATH = path.resolve(process.cwd(), 'test-results', '.auth', 'tmdone-admin.json');
+const AUTH_STATE_MAX_AGE_MS = 30 * 60 * 1000;
+
+function loadLocalEnv() {
+  const envPath = path.resolve(process.cwd(), '.env');
+  if (!fs.existsSync(envPath)) return;
+
+  const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+
+    const separator = trimmed.indexOf('=');
+    if (separator === -1) continue;
+
+    const key = trimmed.slice(0, separator).trim();
+    const rawValue = trimmed.slice(separator + 1).trim();
+    const value = rawValue.replace(/^['"]|['"]$/g, '');
+
+    if (key && process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+
+loadLocalEnv();
+
+function isFreshAuthState() {
+  if (!fs.existsSync(AUTH_STATE_PATH)) return false;
+  const ageMs = Date.now() - fs.statSync(AUTH_STATE_PATH).mtimeMs;
+  return ageMs < AUTH_STATE_MAX_AGE_MS;
+}
+
+function readAuthState() {
+  if (!isFreshAuthState()) return null;
+
+  try {
+    return JSON.parse(fs.readFileSync(AUTH_STATE_PATH, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ */
+async function saveAuthState(page) {
+  fs.mkdirSync(path.dirname(AUTH_STATE_PATH), { recursive: true });
+  await page.context().storageState({ path: AUTH_STATE_PATH }).catch(() => {});
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ */
+async function applyCachedAuthState(page) {
+  const state = readAuthState();
+  if (!state) return false;
+
+  if (Array.isArray(state.cookies) && state.cookies.length > 0) {
+    await page.context().addCookies(state.cookies).catch(() => {});
+  }
+
+  if (Array.isArray(state.origins) && state.origins.length > 0) {
+    await page.addInitScript((origins) => {
+      const matchingOrigin = origins.find((origin) => origin.origin === window.location.origin);
+      if (!matchingOrigin) return;
+      for (const item of matchingOrigin.localStorage || []) {
+        window.localStorage.setItem(item.name, item.value);
+      }
+    }, state.origins).catch(() => {});
+  }
+
+  return true;
+}
 
 // ===================== CONSTANTS ============================
 // Centralized credentials. Keep sensitive values in environment variables
@@ -19,8 +96,12 @@ export const CREDENTIALS = {
 };
 
 export function requireCredentials() {
-  if (!CREDENTIALS.email || !CREDENTIALS.password) {
-    test.skip(true, 'Set TMDONE_EMAIL and TMDONE_PASSWORD in environment variables or GitHub Actions secrets.');
+  const hasPlaceholder =
+    CREDENTIALS.email === 'your-email@example.com' ||
+    CREDENTIALS.password === 'your-password';
+
+  if (!CREDENTIALS.email || !CREDENTIALS.password || hasPlaceholder) {
+    test.skip(true, 'Set real TMDONE_EMAIL and TMDONE_PASSWORD values in .env, environment variables, or GitHub Actions secrets.');
   }
 }
 
@@ -110,6 +191,17 @@ export async function loginToApp(page) {
   requireCredentials();
   const isLoggedIn = () => page.url().includes('home') || page.url().includes('dashboard');
 
+  if (await applyCachedAuthState(page)) {
+    await page.goto(`${CREDENTIALS.baseUrl}/#/home/dashboard`, { waitUntil: 'domcontentloaded', timeout: 120000 }).catch(() => {});
+    await waitForNoSpinner(page);
+    await page.waitForTimeout(1500);
+
+    if (!page.url().includes('signin') && isLoggedIn()) {
+      console.log('Already logged in from cached state - skip!');
+      return;
+    }
+  }
+
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     await dismissSweetAlert(page);
 
@@ -180,6 +272,7 @@ export async function loginToApp(page) {
     await page.waitForTimeout(1500);
 
     if (!page.url().includes('signin')) {
+      await saveAuthState(page);
       console.log('Login success! URL:', page.url());
       return;
     }

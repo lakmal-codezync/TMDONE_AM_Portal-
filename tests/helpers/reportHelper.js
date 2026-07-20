@@ -342,6 +342,7 @@ export async function clickPaginatorButtonIfAvailable(page, direction) {
  */
 export function defineReportSuite(test, report, prefix) {
   test.describe.serial(`${report.name} Report`, () => {
+    // @ts-ignore
     test(`${prefix}-01: Navigate to ${report.name} Report tab`, async ({ page }) => {
       const reportPage = new ReportPage(page, report);
       await reportPage.open();
@@ -350,6 +351,7 @@ export function defineReportSuite(test, report, prefix) {
       });
     });
 
+    // @ts-ignore
     test(`${prefix}-02: Select a date range automatically`, async ({ page }) => {
       const reportPage = new ReportPage(page, report);
       await reportPage.open();
@@ -359,6 +361,7 @@ export function defineReportSuite(test, report, prefix) {
       );
     });
 
+    // @ts-ignore
     test(`${prefix}-03: Select a store from dropdown automatically`, async ({ page }) => {
       const reportPage = new ReportPage(page, report);
       await reportPage.open();
@@ -367,12 +370,14 @@ export function defineReportSuite(test, report, prefix) {
       expect(selected, `${report.name} should expose at least one selectable store option.`).toBeTruthy();
     });
 
+    // @ts-ignore
     test(`${prefix}-04: Search icon/button triggers data load`, async ({ page }) => {
       const reportPage = new ReportPage(page, report);
       await reportPage.prepareReportSearch();
       await verifyPaginationIfAvailable(page);
     });
 
+    // @ts-ignore
     test(`${prefix}-05: Download/Export button works after search`, async ({ page }) => {
       const reportPage = new ReportPage(page, report);
       await reportPage.prepareReportSearch();
@@ -382,6 +387,7 @@ export function defineReportSuite(test, report, prefix) {
       }
     });
 
+    // @ts-ignore
     test(`${prefix}-06: Next and Previous pagination buttons work when available`, async ({ page }) => {
       const reportPage = new ReportPage(page, report);
       await reportPage.prepareReportSearch();

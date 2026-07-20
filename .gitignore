@@ -7,6 +7,10 @@ node_modules/
 /playwright/.cache/
 /playwright/.auth/
 
+# Local secrets
+.env
+.env.local
+
 # Debug artifacts downloaded from GitHub Actions
 /.pw-report-extracted/
 /.pw-report.zip

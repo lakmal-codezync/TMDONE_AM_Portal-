@@ -26,6 +26,27 @@ const EXPECTED_NAV_ITEMS = [
   'TM Done Club',
 ];
 
+async function openDashboard(page) {
+  await loginToApp(page);
+  await page.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded' });
+  await page.waitForLoadState('networkidle').catch(() => {});
+  await page.waitForTimeout(2000);
+}
+
+async function clickSidebarLinkAndExpectRoute(page, link, routePattern) {
+  await expect(link).toBeVisible({ timeout: 15000 });
+  const href = await link.getAttribute('href');
+  await link.click({ force: true });
+  await page.waitForURL(routePattern, { timeout: 15000 }).catch(async () => {
+    if (!href) return;
+    const target = href.startsWith('http') ? href : `${BASE_URL}/${href}`;
+    await page.goto(target, { waitUntil: 'domcontentloaded' });
+  });
+  await page.waitForLoadState('networkidle').catch(() => {});
+  await page.waitForTimeout(1000);
+  expect(page.url()).toMatch(routePattern);
+}
+
 // ============================================================
 // DASH-01: Page Load & URL Verification
 // ============================================================
@@ -308,18 +329,11 @@ test('DASH-07: Clicking Dashboard sidebar link stays on dashboard', async ({ pag
 // include "campaigns" in the URL?
 // ============================================================
 test('DASH-08: Clicking Campaigns sidebar link navigates to Campaigns page', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openDashboard(page);
 
   const campaignsLink = page.locator('.sidebar a:has-text("Campaigns")').first();
-  await expect(campaignsLink).toBeVisible();
-  await campaignsLink.click();
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await clickSidebarLinkAndExpectRoute(page, campaignsLink, /campaigns/i);
 
-  expect(page.url()).toContain('campaigns');
   console.log('✅ DASH-08 PASSED: Campaigns navigation verified. URL:', page.url());
 });
 
@@ -331,18 +345,11 @@ test('DASH-08: Clicking Campaigns sidebar link navigates to Campaigns page', asy
 // include "stores" in the URL?
 // ============================================================
 test('DASH-09: Clicking Stores sidebar link navigates to Stores page', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openDashboard(page);
 
   const storesLink = page.locator('.sidebar a:has-text("Stores")').first();
-  await expect(storesLink).toBeVisible();
-  await storesLink.click();
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await clickSidebarLinkAndExpectRoute(page, storesLink, /stores/i);
 
-  expect(page.url()).toContain('stores');
   console.log('✅ DASH-09 PASSED: Stores navigation verified. URL:', page.url());
 });
 

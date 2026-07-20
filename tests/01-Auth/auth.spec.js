@@ -5,6 +5,7 @@ import { CREDENTIALS, requireCredentials } from '../helpers/loginHelper.js';
 
 // ===================== CONSTANTS ============================
 const LOGIN_URL = CREDENTIALS.loginUrl;
+const DASHBOARD_URL = `${CREDENTIALS.baseUrl}/#/home/dashboard`;
 const VALID_EMAIL = CREDENTIALS.email;
 const VALID_PASSWORD = CREDENTIALS.password;
 
@@ -16,6 +17,14 @@ const passwordInput = (page) => page.locator('input[type="password"]').first();
 /** @param {import('@playwright/test').Page} page */
 const loginButton = (page) =>
   page.locator('button[type="submit"], button:has-text("Sign in"), button:has-text("SIGN IN")').first();
+/** @param {import('@playwright/test').Page} page */
+const loginErrorMessage = (page) =>
+  page
+    .locator(
+      '.swal2-popup, .swal2-container, mat-error, .error-message, .alert-danger, ' +
+        '[class*="error"], [class*="invalid"], [role="alert"]'
+    )
+    .filter({ visible: true });
 
 test.beforeEach(() => {
   requireCredentials();
@@ -23,15 +32,77 @@ test.beforeEach(() => {
 
 /** @param {import('@playwright/test').Page} page */
 async function openLoginPage(page) {
-  await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 90000 });
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await page.goto(LOGIN_URL, { waitUntil: 'commit', timeout: 120000 });
+    await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
+
+    const emailVisible = await emailInput(page).isVisible({ timeout: 30000 }).catch(() => false);
+    const passwordVisible = await passwordInput(page).isVisible({ timeout: 30000 }).catch(() => false);
+    if (emailVisible && passwordVisible) return;
+
+    console.log(`Login form was not visible after navigation attempt ${attempt}; retrying...`);
+    await page.waitForTimeout(2000);
+  }
+
   await expect(emailInput(page)).toBeVisible({ timeout: 30000 });
   await expect(passwordInput(page)).toBeVisible({ timeout: 30000 });
 }
 
 /** @param {import('@playwright/test').Page} page */
 async function waitForSignedIn(page) {
-  await page.waitForURL((url) => !url.toString().includes('signin'), { timeout: 60000 });
+  await page.waitForURL((url) => !url.toString().includes('signin'), { timeout: 60000, waitUntil: 'commit' });
   await page.waitForLoadState('domcontentloaded').catch(() => {});
+}
+
+/** @param {import('@playwright/test').Page} page */
+async function signInWithValidCredentials(page) {
+  await openLoginPage(page);
+  await emailInput(page).fill(VALID_EMAIL);
+  await passwordInput(page).fill(VALID_PASSWORD);
+  await loginButton(page).click();
+  await waitForSignedIn(page);
+}
+
+/** @param {import('@playwright/test').Page} page */
+async function waitForLoginRejected(page) {
+  await page.waitForTimeout(3000);
+  expect(page.url()).toContain('signin');
+}
+
+/** @param {import('@playwright/test').Page} page */
+async function getVisibleLoginErrorText(page) {
+  const errors = loginErrorMessage(page);
+  const count = await errors.count();
+  const messages = [];
+
+  for (let i = 0; i < count; i += 1) {
+    const text = (await errors.nth(i).innerText().catch(() => '')).trim();
+    if (text) messages.push(text);
+  }
+
+  return messages.join('\n');
+}
+
+/** @param {import('@playwright/test').Page} page */
+async function clickLogout(page) {
+  const visibleLogout = page
+    .locator('.sidebar a:has-text("Logout"), a:has-text("power_settings_newLogout"), a:has-text("Logout"), button:has-text("Logout")')
+    .filter({ visible: true })
+    .first();
+
+  if (await visibleLogout.isVisible().catch(() => false)) {
+    await visibleLogout.click();
+    return;
+  }
+
+  const profileTrigger = page.locator('.nav-item.user_pro, [class*="user_pro"], nav li button.mat-icon-button').filter({ visible: true }).first();
+  await expect(profileTrigger).toBeVisible({ timeout: 15000 });
+  await profileTrigger.click();
+  await page.waitForTimeout(1000);
+
+  const menuLogout = page.locator('a:has-text("Logout"), button:has-text("Logout")').filter({ visible: true }).first();
+  await expect(menuLogout).toBeVisible({ timeout: 10000 });
+  await menuLogout.click();
 }
 
 // ============================================================
@@ -402,4 +473,156 @@ test('AUTH-14: Whitespace handling - leading/trailing spaces in credentials', as
       console.log('✅ AUTH-14 PASSED: App correctly identified whitespace-only or untrimmed input as invalid.');
     }
   }
+});
+
+// ============================================================
+// AUTH-15: Invalid Login Error Message
+// The system should show a clear error when credentials are
+// rejected, not only remain on the sign-in page.
+// ============================================================
+test('AUTH-15: Invalid login shows visible error message', async ({ page }) => {
+  await openLoginPage(page);
+
+  await emailInput(page).fill('wronguser@notexisting.com');
+  await passwordInput(page).fill('WrongPassword999!');
+  await loginButton(page).click();
+
+  await waitForLoginRejected(page);
+
+  const errorText = await getVisibleLoginErrorText(page);
+  console.log(`Login error text: ${errorText || '(none found)'}`);
+
+  expect(errorText).toMatch(/invalid|incorrect|wrong|check|credential|username|password|unauthori[sz]ed|not found|required/i);
+
+  console.log('AUTH-15 PASSED: Invalid login displayed a visible rejection message.');
+});
+
+// ============================================================
+// AUTH-16: Invalid Email Format Validation
+// The sign-in form should reject malformed email/username input
+// before authenticating.
+// ============================================================
+test('AUTH-16: Invalid email format is rejected on login form', async ({ page }) => {
+  await openLoginPage(page);
+
+  await emailInput(page).fill('invalid-email-format');
+  await passwordInput(page).fill(VALID_PASSWORD);
+  await loginButton(page).click();
+
+  await waitForLoginRejected(page);
+
+  const emailValidationText = await getVisibleLoginErrorText(page);
+  console.log(`Email validation text: ${emailValidationText || '(none found)'}`);
+
+  const emailValidity = await emailInput(page).evaluate(
+    /** @param {HTMLInputElement} input */ (input) => ({
+      type: input.type,
+      valid: input.validity.valid,
+      validationMessage: input.validationMessage,
+    })
+  );
+
+  const hasVisibleValidation = /email|valid|invalid|required|username|credential/i.test(emailValidationText);
+  const browserRejectedEmail = emailValidity.type === 'email' && !emailValidity.valid;
+
+  expect(hasVisibleValidation || browserRejectedEmail).toBe(true);
+
+  console.log('AUTH-16 PASSED: Malformed email/username input was rejected.');
+});
+
+// ============================================================
+// AUTH-17: Auth Guard - Dashboard Requires Login
+// Direct access to a protected dashboard route without a session
+// should redirect the user to sign-in or render the sign-in form.
+// ============================================================
+test('AUTH-17: Protected dashboard URL redirects unauthenticated user to sign-in', async ({ page }) => {
+  await page.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded', timeout: 90000 });
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  await expect
+    .poll(
+      async () => {
+        const redirectedToSignin = page.url().includes('signin');
+        const loginFormVisible = await emailInput(page).isVisible().catch(() => false);
+        return redirectedToSignin || loginFormVisible;
+      },
+      { timeout: 30000, message: 'Protected dashboard should redirect or show the sign-in form.' }
+    )
+    .toBe(true);
+
+  expect(page.url()).not.toContain('/home/dashboard');
+
+  console.log('AUTH-17 PASSED: Protected dashboard route requires authentication.');
+});
+
+// ============================================================
+// AUTH-18: Logged-In User Visiting Sign-In
+// A user with a valid session should not be stuck on the sign-in
+// page when navigating to the sign-in URL again.
+// ============================================================
+test('AUTH-18: Already logged-in user can access app when sign-in URL is opened again', async ({ page }) => {
+  await signInWithValidCredentials(page);
+
+  await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 90000 });
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  await page.waitForTimeout(3000);
+
+  const appShellVisible = await page.locator('.sidebar, nav.navbar, a[href*="#/home"]').first().isVisible().catch(() => false);
+  const stillOnSignin = page.url().includes('signin');
+
+  if (stillOnSignin && !appShellVisible) {
+    await emailInput(page).fill(VALID_EMAIL);
+    await passwordInput(page).fill(VALID_PASSWORD);
+    await loginButton(page).click();
+    await waitForSignedIn(page);
+  }
+
+  expect(page.url()).not.toContain('signin');
+
+  console.log('AUTH-18 PASSED: Existing session can reach the authenticated app.');
+});
+
+// ============================================================
+// AUTH-19: Logout Back Button Protection
+// After logout, browser back should not expose the protected
+// dashboard content without signing in again.
+// ============================================================
+test('AUTH-19: Logout prevents returning to dashboard with browser back', async ({ page }) => {
+  await signInWithValidCredentials(page);
+  await page.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded', timeout: 90000 });
+  await page.waitForLoadState('networkidle').catch(() => {});
+  await page.waitForTimeout(2000);
+
+  await clickLogout(page);
+  await page.waitForURL((url) => url.toString().includes('signin'), { timeout: 30000 });
+
+  await page.goBack({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(3000);
+
+  const dashboardShellVisible = await page.locator('.sidebar, nav.navbar').first().isVisible().catch(() => false);
+  const loginFormVisible = await emailInput(page).isVisible().catch(() => false);
+
+  expect(page.url().includes('signin') || loginFormVisible).toBe(true);
+  expect(dashboardShellVisible).toBe(false);
+
+  console.log('AUTH-19 PASSED: Dashboard is protected after logout and browser back.');
+});
+
+// ============================================================
+// AUTH-20: Login Page Responsive View
+// The login form should remain usable on a mobile-sized viewport.
+// ============================================================
+test('AUTH-20: Login page is usable on mobile viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 667 });
+  await openLoginPage(page);
+
+  await expect(emailInput(page)).toBeVisible();
+  await expect(passwordInput(page)).toBeVisible();
+  await expect(loginButton(page)).toBeVisible();
+
+  const buttonBox = await loginButton(page).boundingBox();
+  if (!buttonBox) throw new Error('Login button has no bounding box on mobile viewport.');
+  expect(buttonBox.width).toBeGreaterThan(0);
+  expect(buttonBox.height).toBeGreaterThan(0);
+
+  console.log('AUTH-20 PASSED: Login page is usable on mobile viewport.');
 });
