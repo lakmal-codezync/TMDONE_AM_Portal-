@@ -184,6 +184,14 @@ async function getSweetAlertText(page) {
   return (await alert.innerText().catch(() => '')).trim();
 }
 
+/** @param {import('@playwright/test').Page} page */
+async function waitForLoginOrAppSignal(page) {
+  await Promise.race([
+    page.locator('input').first().waitFor({ state: 'visible', timeout: 30000 }),
+    page.locator('.sidebar, nav.navbar, a[href*="#/home"]').first().waitFor({ state: 'visible', timeout: 30000 }),
+  ]).catch(() => {});
+}
+
 /**
  * @param {import("playwright-core").Page} page
  */
@@ -219,7 +227,7 @@ export async function loginToApp(page) {
     await waitForNoSpinner(page);
     await dismissSweetAlert(page);
     if (page.isClosed()) throw new Error('Login page was closed while waiting for the sign-in form.');
-    await page.waitForTimeout(1500);
+    await waitForLoginOrAppSignal(page);
 
     // Check whether the user is already logged in and on the dashboard.
     if (isLoggedIn()) {
@@ -227,9 +235,11 @@ export async function loginToApp(page) {
       return;
     }
 
-    // Fill the email field.
+    // Fill the email/username field. Some Angular builds expose it only as a generic textbox.
     const emailInput = page
       .locator('input[type="email"], input[formcontrolname*="email" i], input[placeholder*="email" i], input')
+      .or(page.getByRole('textbox', { name: /email|username/i }))
+      .or(page.getByRole('textbox'))
       .first();
     const emailVisible = await emailInput.isVisible({ timeout: 20000 }).catch(() => false);
     if (!emailVisible) {
@@ -263,7 +273,13 @@ export async function loginToApp(page) {
     await clickLoginButton(loginBtn, page);
 
     await waitForNoSpinner(page);
-    await page.waitForURL((url) => !url.toString().includes('signin'), { timeout: 45000 }).catch(() => {});
+    await Promise.race([
+      page.waitForURL((url) => !url.toString().includes('signin'), { timeout: 45000 }),
+      page.locator('.swal2-popup, .swal2-container.swal2-backdrop-show').filter({ visible: true }).first().waitFor({
+        state: 'visible',
+        timeout: 15000,
+      }),
+    ]).catch(() => {});
     if (page.isClosed()) throw new Error('Login page was closed after submitting credentials.');
     await page.waitForLoadState('domcontentloaded').catch(() => {});
     const loginAlertText = await getSweetAlertText(page);
@@ -277,7 +293,7 @@ export async function loginToApp(page) {
       return;
     }
 
-    if (attempt === 3 && /check your username and password|invalid|incorrect|unauthori[sz]ed/i.test(loginAlertText)) {
+    if (/check your username and password|invalid|incorrect|unauthori[sz]ed/i.test(loginAlertText)) {
       test.skip(
         true,
         `Login rejected the configured shared account: ${loginAlertText}. Check TMDONE_EMAIL/TMDONE_PASSWORD or account state.`
