@@ -38,6 +38,25 @@ jobs:
       - name: Run full system test suite
         run: npm run test:all
 
+      - name: Build email summary
+        id: summary
+        if: always()
+        run: node .github/scripts/build-email-summary.js
+
+      - name: Email daily test results
+        if: always()
+        continue-on-error: true
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.GMAIL_ADDRESS }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: ${{ steps.summary.outputs.subject }}
+          to: lakmal@codezync.com
+          from: TMDone Playwright CI <${{ secrets.GMAIL_ADDRESS }}>
+          html_body: file://email-summary.html
+
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v4

@@ -24,6 +24,7 @@ export default defineConfig({
   // Generate the HTML report after the test run.
   reporter: [
     ['html', { outputFolder: 'playwright-report', open: 'never' }],
+    ['json', { outputFile: 'test-results/results.json' }],
     ['list'],
   ],
 
