@@ -69,6 +69,7 @@
     "test:reels": "npx playwright test tests/15-Reels",
     "test:user-notifications": "npx playwright test \".*17-User Notifications.*UserNotifications.spec.js\"",
     "test:club": "npx playwright test TMDoneClubAnalytics.spec.js SubscriptionPlans.spec.js SubscriptionsReports.spec.js CancellationReasons.spec.js",
+    "test:spotlights": "npx playwright test tests/18-Spotlights",
     "test:all": "npx playwright test tests/",
     "test:headed": "npx playwright test --headed",
     "test:debug": "npx playwright test --debug",

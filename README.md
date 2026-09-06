@@ -24,6 +24,7 @@ Covered areas:
 - Reels
 - TM Done Club analytics, plans, subscriptions, and cancellation reasons
 - User notifications
+- Spotlights (Tile and Carousel)
 
 ##  Page Screenshots
 
@@ -93,6 +94,7 @@ The screenshots below are captured from the real TMDone Admin Console as 1440x90
 - `npm run test:reels` - run reels tests
 - `npm run test:club` - run TM Done Club tests
 - `npm run test:user-notifications` - run user notification tests
+- `npm run test:spotlights` - run spotlights tests
 - `npm run test:all` - run all tests
 - `npm run report` - show the HTML report
 
@@ -113,6 +115,20 @@ Generated screenshots are saved in `docs/screenshots/` as 1440x900 PNG files.
 - Headless by default
 - Screenshots and videos are captured on failure
 - Trace collection enabled on first retry
+- Reporters: HTML (`playwright-report/`), JSON (`test-results/results.json`), and list (console)
+
+## Continuous Integration
+
+`.github/workflows/daily-playwright.yml` runs the full suite automatically every day at **2:00 AM Asia/Colombo time** (8:30 PM UTC), and can also be triggered manually from the Actions tab (`workflow_dispatch`).
+
+After the run, it emails a results summary via Gmail SMTP - one table per spec file listing each test's **Test ID**, **description**, and **status** (pass/fail/flaky/skipped), plus overall pass/fail counts. The summary is built by `.github/scripts/build-email-summary.js` from the JSON reporter output.
+
+To enable the email step, set these repository secrets:
+
+- `GMAIL_ADDRESS` - the Gmail address to send from
+- `GMAIL_APP_PASSWORD` - a Google Account [App Password](https://myaccount.google.com/apppasswords) for that address (requires 2-Step Verification)
+
+The HTML report and raw test results are also uploaded as workflow artifacts (14-day retention) regardless of whether the email sends.
 
 ## Folder Structure
 
@@ -121,6 +137,8 @@ Generated screenshots are saved in `docs/screenshots/` as 1440x900 PNG files.
 - `tests/fixtures/` - test upload files and sample assets
 - `docs/screenshots/` - real screenshots used in this README
 - `scripts/capture-readme-screenshots.mjs` - README screenshot capture script
+- `.github/workflows/daily-playwright.yml` - scheduled CI run and email report
+- `.github/scripts/build-email-summary.js` - builds the HTML email summary from test results
 - `playwright.config.js` - Playwright settings
 - `package.json` - npm scripts and dependencies
 
