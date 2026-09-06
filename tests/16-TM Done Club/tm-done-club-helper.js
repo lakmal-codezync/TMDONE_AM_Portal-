@@ -133,13 +133,17 @@ export class TMDoneClubPage {
     await goToPage(this.page, '#/home/campaigns');
     await this.page.waitForLoadState('domcontentloaded').catch(() => {});
 
+    // Real (non-forced) clicks are required here - these sidebar entries
+    // are Angular router-link <a> tags, and a force click bypasses the
+    // click handler that actually triggers navigation (confirmed on the
+    // User Notifications sidebar link, which has the same structure).
     if (await this.parentMenuLink.isVisible().catch(() => false)) {
-      await this.parentMenuLink.click({ force: true }).catch(() => {});
+      await this.parentMenuLink.click().catch(() => {});
       await this.page.waitForTimeout(1200);
     }
 
     if (await this.submenuLink.isVisible().catch(() => false)) {
-      await this.submenuLink.click({ force: true }).catch(() => {});
+      await this.submenuLink.click().catch(() => {});
       await this.page.waitForLoadState('domcontentloaded').catch(() => {});
       await this.page.waitForTimeout(2500);
     }

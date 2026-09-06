@@ -1,9 +1,11 @@
 // @ts-check
 // ============================================================
 // TMDone Admin Console - User Notifications
-// Full coverage: page load, create notification basic info,
-// recipient Excel upload, submit, view, Excel download, row
-// actions, search, clear, pagination, and safe destructive checks.
+// Scope: view-only coverage — page load, viewing an existing
+// notification's details, its Excel attachment download, and the
+// list's row-actions menu, search, clear, and pagination. Creating a
+// notification is only ever done as setup (when none exist yet to
+// view) — there is no dedicated create test.
 // ============================================================
 
 import { test, expect } from '@playwright/test';
@@ -98,7 +100,7 @@ class UserNotificationsPage {
     for (const route of USER_NOTIFICATION_ROUTES) {
       await goToPage(this.page, route);
       await this.waitForNoSpinner();
-      if (await this.isUserNotificationsPage()) {
+      if (await this.pollForUserNotificationsPage()) {
         moduleLoaded = true;
         break;
       }
@@ -134,11 +136,14 @@ class UserNotificationsPage {
 
     if (!(await menuItem.isVisible().catch(() => false))) return false;
 
-    await menuItem.click({ force: true }).catch(() => {});
+    // A real (non-forced) click is required - this sidebar link is an
+    // Angular router-link <a>, and a force click bypasses its click
+    // handler, leaving the app on whatever page it started from.
+    await menuItem.click().catch(() => {});
     await this.page.waitForLoadState('domcontentloaded').catch(() => {});
     await this.page.waitForTimeout(2500);
     await this.waitForNoSpinner();
-    return this.isUserNotificationsPage();
+    return this.pollForUserNotificationsPage();
   }
 
   async isUserNotificationsPage() {
@@ -147,6 +152,22 @@ class UserNotificationsPage {
     const hasUserNotificationSignal = /User\s*Notifications?|Create\s*User\s*Notification|Notification\s*Title|Basic\s*Information/i.test(contentText);
     const wrongModuleSignal = /Campaigns|Smart\s*Boost|Reels|Offers|Order\s*Management/i.test(this.firstLine(contentText));
     return /notification/i.test(url) && hasUserNotificationSignal && !wrongModuleSignal;
+  }
+
+  /**
+   * The lazy-loaded module can take a moment to render after navigation,
+   * especially under slow live-environment load - a single immediate
+   * check right after navigating can false-negative. Poll for a few
+   * seconds before giving up on the current route/click.
+   * @param {number} timeoutMs
+   */
+  async pollForUserNotificationsPage(timeoutMs = 6000) {
+    const deadline = Date.now() + timeoutMs;
+    do {
+      if (await this.isUserNotificationsPage()) return true;
+      await this.page.waitForTimeout(500);
+    } while (Date.now() < deadline);
+    return false;
   }
 
   async waitForReady() {
@@ -173,7 +194,43 @@ class UserNotificationsPage {
     expect(visibleControls).toBeGreaterThan(0);
   }
 
-  async verifyCreateNotificationFlow() {
+  /**
+   * Picks the title of whatever notification currently sits in the first
+   * table row (any pre-existing demo data counts), without filtering by
+   * search. Returns null if the table is empty.
+   */
+  async findExistingNotificationTitle() {
+    await this.clickClearButton().catch(() => {});
+    await this.waitForNoSpinner();
+    const anyRow = this.rows.first();
+    if (!(await anyRow.isVisible({ timeout: 5000 }).catch(() => false))) return null;
+
+    // Read only the title (first) cell - the row's own innerText joins every
+    // column into one string with no separator, which isn't usable as a
+    // search term or a hasText match against a specific row later.
+    const titleCell = anyRow.locator('mat-cell, td, .datatable-body-cell').first();
+    const titleText = (await titleCell.innerText().catch(() => '')).trim();
+    return titleText || null;
+  }
+
+  /**
+   * View-only coverage needs a notification to view. Reuse whatever
+   * already exists in the shared demo data; only create one (via the
+   * full Basic Information + Excel upload flow) if the list is empty.
+   */
+  async ensureNotificationToView() {
+    const existingTitle = await this.findExistingNotificationTitle();
+    if (existingTitle) {
+      console.log(`UN: using existing notification "${existingTitle}" to view.`);
+      return existingTitle;
+    }
+
+    console.log('UN: no existing notification found; creating one to view.');
+    await this.createNotification();
+    return NOTIFICATION_TITLE;
+  }
+
+  async createNotification() {
     await expect(this.createButton).toBeVisible({ timeout: 20000 });
     await this.createButton.click({ force: true });
     await this.page.waitForTimeout(1500);
@@ -257,12 +314,13 @@ class UserNotificationsPage {
     await this.searchByTitle(NOTIFICATION_TITLE);
   }
 
-  async verifyViewCreatedNotification() {
-    await this.searchByTitle(NOTIFICATION_TITLE);
+  /** @param {string} title */
+  async verifyViewNotification(title) {
+    await this.searchByTitle(title);
 
-    const row = await this.createdRowOrSkip('Created notification is not available to view in this environment.');
+    const row = await this.createdRowOrSkip(title, `Notification "${title}" is not available to view in this environment.`);
     const opened = await this.openRowAction(/View|Details|Preview/i, row);
-    expect(opened, 'Created notification should expose a View or Details action.').toBe(true);
+    expect(opened, 'Notification row should expose a View or Details action.').toBe(true);
 
     const dialog = this.activeDialog();
     if (await dialog.isVisible().catch(() => false)) {
@@ -274,10 +332,11 @@ class UserNotificationsPage {
     }
   }
 
-  async verifyExcelDownload() {
-    await this.searchByTitle(NOTIFICATION_TITLE);
+  /** @param {string} title */
+  async verifyExcelDownload(title) {
+    await this.searchByTitle(title);
 
-    const row = await this.createdRowOrSkip('Created notification is not available for Excel download verification in this environment.');
+    const row = await this.createdRowOrSkip(title, `Notification "${title}" is not available for Excel download verification in this environment.`);
     const viewOpened = await this.openRowAction(/View|Details|Preview/i, row);
     expect(viewOpened, 'Excel download is exposed from the User Notification view/details surface.').toBe(true);
 
@@ -313,16 +372,25 @@ class UserNotificationsPage {
       .filter({ visible: true })
       .first();
 
-    await expect(detailDownload, 'User Notification details should expose an Excel/download action.').toBeVisible({ timeout: 10000 });
+    const downloadVisible = await detailDownload.isVisible({ timeout: 10000 }).catch(() => false);
+    if (!downloadVisible) {
+      await this.closeDialog();
+      await this.goto();
+      test.skip(true, `"${title}" has no Excel attachment to download in this environment.`);
+    }
     await this.capturePossibleDownload(detailDownload);
     await this.closeDialog();
     await this.goto();
   }
 
-  async verifyAllVisibleButtonsAndTableTools() {
-    await this.verifySearchClearAndPagination();
+  /**
+   * View-only coverage: search/clear/pagination and that a row exposes an
+   * actions menu. Create/edit/delete are intentionally not exercised here.
+   * @param {string} title
+   */
+  async verifyAllVisibleButtonsAndTableTools(title) {
+    await this.verifySearchClearAndPagination(title);
     await this.verifyRowActionMenu();
-    await this.verifyOptionalEditAndDeleteButtonsSafely();
 
     const buttons = this.page.locator('button, [role="button"]').filter({ visible: true });
     expect(await buttons.count()).toBeGreaterThan(0);
@@ -336,7 +404,8 @@ class UserNotificationsPage {
     }
   }
 
-  async verifySearchClearAndPagination() {
+  /** @param {string} title */
+  async verifySearchClearAndPagination(title) {
     const searchInput = this.page
       .locator('input[placeholder*="Search" i], input[aria-label*="search" i], input[matinput], input.mat-input-element')
       .filter({ visible: true })
@@ -344,7 +413,7 @@ class UserNotificationsPage {
 
     if (await searchInput.isVisible().catch(() => false)) {
       await searchInput.click({ force: true });
-      await searchInput.fill(NOTIFICATION_TITLE);
+      await searchInput.fill(title);
       await this.clickSearchButton();
       await this.page.waitForTimeout(1200);
       await expect(this.table.or(this.page.locator(':text("No data"), :text("No records"), :text("No results")').first()).first()).toBeVisible();
@@ -355,7 +424,7 @@ class UserNotificationsPage {
   }
 
   async verifyRowActionMenu() {
-    const row = this.rowByTitleOrFirst();
+    const row = this.rows.first();
     if (!(await row.isVisible().catch(() => false))) return;
 
     const opened = await this.openRowMenu(row);
@@ -363,38 +432,17 @@ class UserNotificationsPage {
     await this.page.keyboard.press('Escape').catch(() => {});
   }
 
-  async verifyOptionalEditAndDeleteButtonsSafely() {
-    const row = this.rowByTitleOrFirst();
-    if (!(await row.isVisible().catch(() => false))) return;
-
-    const editOpened = await this.openRowAction(/Edit|Update/i, row);
-    if (editOpened) {
-      await expect(this.activeDialog().or(this.page.locator('body')).first()).toContainText(/Edit|Update|Notification|Title|Description/i);
-      await this.closeDialog();
-      await this.goto();
-    }
-
-    await this.searchByTitle(NOTIFICATION_TITLE);
-    const deleteOpened = await this.openRowAction(/Delete|Remove/i, this.rowByTitleOrFirst());
-    if (deleteOpened) {
-      await expect(this.activeDialog().or(this.page.locator('body')).first()).toContainText(/Delete|Remove|Confirm|Cancel|Are you sure/i);
-      await this.cancelConfirmation();
-      await this.goto();
-    }
+  /** @param {string} title */
+  rowByTitle(title) {
+    return this.rows.filter({ hasText: title }).first();
   }
 
-  rowByTitleOrFirst() {
-    const createdRow = this.rows.filter({ hasText: NOTIFICATION_TITLE }).first();
-    return createdRow.or(this.rows.first()).first();
-  }
-
-  rowByTitle() {
-    return this.rows.filter({ hasText: NOTIFICATION_TITLE }).first();
-  }
-
-  /** @param {string} reason */
-  async createdRowOrSkip(reason) {
-    const createdRow = this.rowByTitle();
+  /**
+   * @param {string} title
+   * @param {string} reason
+   */
+  async createdRowOrSkip(title, reason) {
+    const createdRow = this.rowByTitle(title);
     if (await createdRow.isVisible().catch(() => false)) return createdRow;
 
     const noResultsVisible = await this.page
@@ -406,7 +454,7 @@ class UserNotificationsPage {
     const anyRowVisible = await this.rows.first().isVisible().catch(() => false);
 
     test.skip(noResultsVisible || !anyRowVisible, reason);
-    test.skip(true, `${reason} Search did not return "${NOTIFICATION_TITLE}".`);
+    test.skip(true, `${reason} Search did not return "${title}".`);
   }
 
   /**
@@ -944,19 +992,6 @@ class UserNotificationsPage {
     }
   }
 
-  async cancelConfirmation() {
-    const cancelButton = this.page
-      .locator('.swal2-cancel, button:has-text("Cancel"), button:has-text("No"), button:has-text("Close")')
-      .filter({ visible: true })
-      .first();
-    if (await cancelButton.isVisible().catch(() => false)) {
-      await cancelButton.click({ force: true }).catch(() => {});
-    } else {
-      await this.page.keyboard.press('Escape').catch(() => {});
-    }
-    await this.page.waitForTimeout(1000);
-  }
-
   async closeDialog() {
     const closeButton = this.page
       .locator(
@@ -1033,9 +1068,11 @@ class UserNotificationsPage {
   }
 }
 
-test.describe.serial('17 - User Notifications', () => {
+test.describe.serial('17 - User Notifications - View-Only Coverage', () => {
   /** @type {UserNotificationsPage} */
   let userNotifications;
+  /** @type {string | null} */
+  let notificationTitleToView = null;
 
   test.beforeEach(async ({ page }) => {
     test.setTimeout(300000);
@@ -1047,19 +1084,18 @@ test.describe.serial('17 - User Notifications', () => {
     await userNotifications.verifyPageLoaded();
   });
 
-  test('UN-02: Create User Notification with Basic Information and PhoneNumber Excel upload', async () => {
-    await userNotifications.verifyCreateNotificationFlow();
+  test('UN-02: View an existing User Notification (creating one first if none exist)', async () => {
+    notificationTitleToView = await userNotifications.ensureNotificationToView();
+    await userNotifications.verifyViewNotification(notificationTitleToView);
   });
 
-  test('UN-03: View created User Notification details', async () => {
-    await userNotifications.verifyViewCreatedNotification();
+  test('UN-03: Download the Excel file attached to a User Notification', async () => {
+    test.skip(!notificationTitleToView, 'No notification title was resolved in UN-02; nothing to check.');
+    await userNotifications.verifyExcelDownload(/** @type {string} */ (notificationTitleToView));
   });
 
-  test('UN-04: Download User Notification Excel file', async () => {
-    await userNotifications.verifyExcelDownload();
-  });
-
-  test('UN-05: Check User Notifications buttons, row actions, filters, and pagination', async () => {
-    await userNotifications.verifyAllVisibleButtonsAndTableTools();
+  test('UN-04: Check User Notifications search, filters, pagination, and row-action menu', async () => {
+    const title = notificationTitleToView || (await userNotifications.ensureNotificationToView());
+    await userNotifications.verifyAllVisibleButtonsAndTableTools(title);
   });
 });

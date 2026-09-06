@@ -3,15 +3,15 @@
 // TMDone Admin Console - Manage Stores Full Script
 // URL: #/home/stores
 // Scope: Stores list, filters, export, pagination, create/view/edit/status.
-// Target edit store: Cafe Asiana
+// Target edit store: Food House
 // ============================================================
 
 import { test, expect } from '@playwright/test';
 import { loginToApp, CREDENTIALS } from '../helpers/loginHelper.js';
 
 const STORES_URL = `${CREDENTIALS.baseUrl}/#/home/stores`;
-const TARGET_STORE_NAME = 'Cafe Asiana';
-const VIEW_STORE_NAME = 'Kopi Kade';
+const TARGET_STORE_NAME = 'Food House';
+const VIEW_STORE_NAME = 'Food House';
 
 const selectors = {
   table: '.table-responsive, mat-table, table',
@@ -83,7 +83,7 @@ test.describe('06-Stores - Manage Stores Full Script', () => {
     expect(searchVisible, 'Search input should be visible.').toBe(true);
   });
 
-  test('ST-02: Search filters stores by Cafe Asiana', async ({ page }) => {
+  test('ST-02: Search filters stores by Food House', async ({ page }) => {
     await searchStore(page, TARGET_STORE_NAME);
     const targetRow = await getRowByText(page, TARGET_STORE_NAME);
 
@@ -206,7 +206,7 @@ test.describe('06-Stores - Manage Stores Full Script', () => {
     await closeCurrentForm(page);
   });
 
-  test('ST-10: Cafe Asiana view action is available', async ({ page }) => {
+  test('ST-10: Food House view action is available', async ({ page }) => {
     const row = await findTargetStoreRow(page);
     const rowButtons = row.locator('button');
     const rowButtonCount = await rowButtons.count();
@@ -216,21 +216,21 @@ test.describe('06-Stores - Manage Stores Full Script', () => {
     await expect(viewAction, `${TARGET_STORE_NAME} should have a view action.`).toBeVisible({ timeout: 10000 });
   });
 
-  test('ST-11: Cafe Asiana edit action is available', async ({ page }) => {
+  test('ST-11: Food House edit action is available', async ({ page }) => {
     const row = await findTargetStoreRow(page);
     const rowButtonCount = await row.locator('button').count();
 
     expect(rowButtonCount, `${TARGET_STORE_NAME} should expose status, view, and edit/update actions.`).toBeGreaterThanOrEqual(3);
   });
 
-  test('ST-12: Cafe Asiana status action is available', async ({ page }) => {
+  test('ST-12: Food House status action is available', async ({ page }) => {
     const row = await findTargetStoreRow(page);
     const statusAction = row.locator('button').filter({ hasText: /suspend|unsuspend/i }).first();
 
     await expect(statusAction, `${TARGET_STORE_NAME} should have a status action.`).toBeVisible({ timeout: 10000 });
   });
 
-  test('ST-13: View Kopi Kade store details tabs', async ({ page }) => {
+  test('ST-13: View Food House store details tabs', async ({ page }) => {
     const row = await findStoreRow(page, VIEW_STORE_NAME);
     await openViewActionFromStoreRow(page, row, VIEW_STORE_NAME);
 
@@ -246,12 +246,15 @@ test.describe('06-Stores - Manage Stores Full Script', () => {
     ]);
   });
 
-  test('ST-14: Close Kopi Kade store for 15 mins with reason', async ({ page }) => {
+  test('ST-14: Close Food House store for 15 mins with reason, then restore it', async ({ page }) => {
     const row = await findStoreRow(page, VIEW_STORE_NAME);
     const statusActionText = ((await row.locator('button').filter({ hasText: /suspend|unsuspend/i }).first().textContent().catch(() => '')) || '').trim();
 
     if (/unsuspend/i.test(statusActionText)) {
-      test.info().annotations.push({ type: 'info', description: `${VIEW_STORE_NAME} is already closed/suspended.` });
+      test.info().annotations.push({
+        type: 'info',
+        description: `${VIEW_STORE_NAME} was already closed/suspended before this test ran; leaving it as-is rather than guessing its original state.`,
+      });
       return;
     }
 
@@ -261,6 +264,24 @@ test.describe('06-Stores - Manage Stores Full Script', () => {
     await selectStatusDialogReason(page);
     await selectStatusDurationIfAvailable(page, /15\s*mins?|15\s*minutes?/i);
     await confirmCloseStore(page);
+
+    // Restore the store to its original (open) state so this test doesn't
+    // leave the shared demo data suspended after it finishes.
+    const suspendedRow = await findStoreRow(page, VIEW_STORE_NAME);
+    const reopenAction = suspendedRow.locator('button').filter({ hasText: /unsuspend/i }).first();
+    await expect(reopenAction, `${VIEW_STORE_NAME} should show an Unsuspend action after being closed.`).toBeVisible({
+      timeout: 15000,
+    });
+    await reopenAction.scrollIntoViewIfNeeded().catch(() => {});
+    await reopenAction.click({ force: true, noWaitAfter: true });
+    await confirmReopenStore(page);
+
+    const restoredRow = await findStoreRow(page, VIEW_STORE_NAME);
+    const restoredStatusText = ((await restoredRow.locator('button').filter({ hasText: /suspend|unsuspend/i }).first().textContent().catch(() => '')) || '').trim();
+    expect(
+      /^suspend$/i.test(restoredStatusText),
+      `${VIEW_STORE_NAME} should be back to its original open state after the test.`
+    ).toBe(true);
   });
 });
 
@@ -335,11 +356,26 @@ function getSearchInput(page) {
 }
 
 /**
+ * Prefers an exact match on the row's first cell (the store name column) so
+ * a search like "Food House" doesn't accidentally resolve to a similarly
+ * named branch such as "Food House - Al Khoudh" or "New Food House - Barka".
+ * Falls back to a plain substring match if no exact cell match is found.
  * @param {import('@playwright/test').Page} page
  * @param {string} text
  */
 async function getRowByText(page, text) {
-  return page.locator(selectors.rows).filter({ hasText: new RegExp(escapeRegExp(text), 'i') }).first();
+  const rows = page.locator(selectors.rows).filter({ hasText: new RegExp(escapeRegExp(text), 'i') });
+  const count = await rows.count();
+
+  for (let index = 0; index < count; index += 1) {
+    const row = rows.nth(index);
+    const firstCellText = ((await row.locator('td, mat-cell').first().textContent().catch(() => '')) || '').trim();
+    if (firstCellText.toLowerCase() === text.toLowerCase()) {
+      return row;
+    }
+  }
+
+  return rows.first();
 }
 
 /** @param {import('@playwright/test').Page} page */
@@ -353,8 +389,18 @@ async function findTargetStoreRow(page) {
  */
 async function findStoreRow(page, storeName) {
   await searchStore(page, storeName);
-  const row = await getRowByText(page, storeName);
-  const rowVisible = await row.isVisible({ timeout: 15000 }).catch(() => false);
+  let row = await getRowByText(page, storeName);
+  let rowVisible = await row.isVisible({ timeout: 15000 }).catch(() => false);
+
+  // The search occasionally doesn't apply on the first try (silently returns
+  // the unfiltered list), so retry once before concluding the store is
+  // genuinely absent from the current data set.
+  if (!rowVisible) {
+    await searchStore(page, storeName);
+    row = await getRowByText(page, storeName);
+    rowVisible = await row.isVisible({ timeout: 15000 }).catch(() => false);
+  }
+
   test.skip(!rowVisible, `${storeName} row is not available in the current Stores data set.`);
   return row;
 }
@@ -600,7 +646,7 @@ async function selectStatusDurationIfAvailable(page, durationPattern) {
   if (!selectedDuration) {
     test.info().annotations.push({
       type: 'info',
-      description: '15 mins duration control is not available in the current Kopi Kade suspend dialog.',
+      description: `15 mins duration control is not available in the current ${VIEW_STORE_NAME} suspend dialog.`,
     });
   }
 
@@ -620,8 +666,97 @@ async function confirmCloseStore(page) {
   ].join(', ')).last();
 
   await expect(confirmButton, 'Close Store confirmation button should be visible.').toBeVisible({ timeout: 15000 });
+
+  // The confirm button stays disabled until the required reason (and
+  // duration, when offered) are filled. On a slow-loading dialog those
+  // selections can silently no-op before their controls are ready, so retry
+  // them a few times before treating it as a real failure.
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    if (await confirmButton.isEnabled().catch(() => false)) break;
+    if (attempt === 3) break;
+
+    await selectStatusDialogReason(page).catch(() => {});
+    await selectStatusDurationIfAvailable(page, /15\s*mins?|15\s*minutes?/i).catch(() => {});
+    await page.waitForTimeout(1000);
+  }
+
   await expect(confirmButton, 'Close Store confirmation button should be enabled.').toBeEnabled({ timeout: 15000 });
   await confirmButton.click({ force: true, noWaitAfter: true });
+  await waitForAppSettled(page);
+}
+
+/**
+ * Confirms whatever dialog appears after clicking an "Unsuspend" row action.
+ * The unsuspend dialog (app-store-unsuspend) requires both a "Reason"
+ * mat-select and a "Reason Description" textarea before its confirm button
+ * enables — some dialogs may apply the reopen immediately without any of
+ * this, so this is a no-op when no dialog shows up.
+ * @param {import('@playwright/test').Page} page
+ */
+async function fillReopenStoreReason(page, dialog) {
+  const reasonDropdown = dialog.locator('mat-select[formcontrolname="Reason"], mat-select').first();
+  if (await reasonDropdown.isVisible().catch(() => false)) {
+    await reasonDropdown.click({ force: true });
+    await page.locator('mat-option').first().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+    const reasonOptions = page.locator('mat-option');
+    const reasonCount = await reasonOptions.count();
+    for (let i = 0; i < reasonCount; i += 1) {
+      const text = ((await reasonOptions.nth(i).textContent().catch(() => '')) || '').trim();
+      if (text) {
+        await reasonOptions.nth(i).click({ force: true });
+        break;
+      }
+    }
+    // A click on an option in this multi-select-styled panel doesn't
+    // auto-close it — click elsewhere in the dialog rather than Escape,
+    // which can revert the selection.
+    await dialog.locator('.store-name, h5').first().click({ force: true }).catch(() => {});
+    await page.waitForTimeout(500);
+  }
+
+  const descriptionField = dialog.locator('textarea[formcontrolname="ReasonDescription"], textarea').first();
+  if (await descriptionField.isVisible().catch(() => false)) {
+    await descriptionField.fill('Restoring store to its original open state after automated test.');
+    await page.waitForTimeout(500);
+  }
+}
+
+async function confirmReopenStore(page) {
+  const dialog = page.locator(selectors.dialog).first();
+  const dialogVisible = await dialog.isVisible({ timeout: 5000 }).catch(() => false);
+  if (!dialogVisible) return;
+
+  await fillReopenStoreReason(page, dialog);
+
+  const confirmButton = page.locator([
+    'button:has-text("Unsuspend")',
+    'button:has-text("Reopen")',
+    'button:has-text("Open Store")',
+    'button:has-text("Confirm")',
+    'button:has-text("Update")',
+    'button:has-text("Save")',
+    'button:has-text("Submit")',
+    'button:has-text("Yes")',
+    'button:has-text("OK")',
+  ].join(', ')).last();
+
+  const confirmVisible = await confirmButton.isVisible({ timeout: 10000 }).catch(() => false);
+  if (!confirmVisible) {
+    await page.keyboard.press('Escape').catch(() => {});
+    return;
+  }
+
+  // Mirrors confirmCloseStore's tolerance for a slow-loading dialog: retry
+  // the reason/description fill if the confirm button hasn't enabled yet.
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    if (await confirmButton.isEnabled().catch(() => false)) break;
+    if (attempt === 3) break;
+    await fillReopenStoreReason(page, dialog);
+  }
+
+  await expect(confirmButton, 'Unsuspend confirmation button should be enabled.').toBeEnabled({ timeout: 15000 });
+  await confirmButton.click({ force: true });
+  await dialog.waitFor({ state: 'hidden', timeout: 20000 }).catch(() => {});
   await waitForAppSettled(page);
 }
 

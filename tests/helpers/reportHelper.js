@@ -66,6 +66,10 @@ export class ReportPage {
     return clickPaginatorButtonIfAvailable(this.page, 'previous');
   }
 
+  async clearFilters() {
+    return clickClearIfAvailable(this.page);
+  }
+
   async prepareReportSearch() {
     await this.open();
     await this.selectDateRange();
@@ -238,7 +242,7 @@ export async function clickSearch(page) {
   await expect(searchBtn, 'Search button/icon should be enabled.').toBeEnabled({ timeout: 15000 });
   await searchBtn.click({ force: true });
   await page.waitForLoadState('domcontentloaded').catch(() => {});
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(3000);
 }
 
 /** @param {import('@playwright/test').Page} page */
@@ -269,7 +273,10 @@ export async function verifyReportOutput(page) {
 /** @param {import('@playwright/test').Page} page */
 export async function verifyDownloadControl(page) {
   const downloadBtn = getDownloadButton(page);
-  await expect(downloadBtn, 'Download/Export button should be visible.').toBeVisible({ timeout: 15000 });
+  // Reports can hold large live datasets, so the download control can take a
+  // while to re-render after a search — give it more room than a typical
+  // static-element check before declaring it missing.
+  await expect(downloadBtn, 'Download/Export button should be visible.').toBeVisible({ timeout: 30000 });
 }
 
 /** @param {import('@playwright/test').Page} page */
@@ -433,6 +440,31 @@ export function defineReportSuite(test, report, prefix) {
 
       const previousClicked = await reportPage.clickPreviousPage();
       expect(previousClicked, `${report.name} should allow returning to the previous page after clicking next.`).toBeTruthy();
+    });
+
+    // @ts-ignore
+    test(`${prefix}-07: Clear/Reset button resets filters without breaking the page`, async ({ page }) => {
+      test.setTimeout(180000);
+      const reportPage = new ReportPage(page, report);
+      await reportPage.prepareReportSearch();
+
+      const cleared = await reportPage.clearFilters();
+      if (!cleared) {
+        test.info().annotations.push({
+          type: 'info',
+          description: `${report.name} report did not expose a Clear/Reset control.`,
+        });
+        return;
+      }
+
+      // The report shell (search/download controls) should still be usable
+      // after clearing filters, not left in a broken/blank state.
+      const searchBtn = page
+        .locator('button.search-btn, button:has(mat-icon:has-text("search")), button[aria-label*="search" i], button:has-text("Search")')
+        .first();
+      await expect(searchBtn, `${report.name} search control should remain usable after clearing filters.`).toBeVisible({
+        timeout: 15000,
+      });
     });
   });
 }

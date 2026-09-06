@@ -67,9 +67,15 @@ const selectDropdownOption = async (page, label, fallbackIndex = 0) => {
     `[role="combobox"][aria-label*="${label}" i]`
   ).first();
 
+  // isVisible() checks the current state immediately without waiting, so a
+  // dropdown that simply hasn't rendered yet would be wrongly treated as
+  // "not available" — give it a moment to actually appear first.
+  await dropdown.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
+
   let target = dropdown;
   if (!(await target.isVisible().catch(() => false))) {
     target = page.locator('mat-select, [role="combobox"]').nth(fallbackIndex);
+    await target.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
   }
 
   if (!(await target.isVisible().catch(() => false)) || !(await target.isEnabled().catch(() => false))) {
@@ -478,5 +484,41 @@ test.describe('Stores Ratings Module', () => {
 
     await page.keyboard.press('Escape').catch(() => {});
     console.log('SR-11 PASSED: First row details action verified safely.');
+  });
+
+  test('SR-12: Clear control works safely before any filter or search is applied', async ({ page }) => {
+    // Edge case not covered by SR-06, which always selects a filter first:
+    // clicking Clear as the very first action should not error or break the
+    // module shell.
+    const cleared = await clearFilters(page);
+    if (!cleared) {
+      console.log('SR-12: Clear control not found. Passing gracefully.');
+      return;
+    }
+
+    await expectRatingsResultArea(page);
+    console.log('SR-12 PASSED: Clear control is safe to use with no prior filter/search.');
+  });
+
+  test('SR-13: Module remains usable on a mobile viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await page.waitForTimeout(500);
+
+    await expect(page.locator(MODULE_SHELL_SELECTOR).first(), 'Module shell should still render on mobile.').toBeVisible({
+      timeout: 15000,
+    });
+
+    const searchBtn = page.locator(
+      'button.search-btn, button:has(mat-icon:has-text("search")), button[aria-label*="search" i]'
+    ).first();
+    await expect(searchBtn, 'Search control should still be visible on mobile.').toBeVisible({ timeout: 10000 });
+
+    const box = await searchBtn.boundingBox();
+    if (!box) throw new Error('Search control has no bounding box on mobile viewport.');
+    expect(box.width).toBeGreaterThan(0);
+    expect(box.height).toBeGreaterThan(0);
+
+    await page.setViewportSize({ width: 1280, height: 720 });
+    console.log('SR-13 PASSED: Module usable on mobile viewport.');
   });
 });

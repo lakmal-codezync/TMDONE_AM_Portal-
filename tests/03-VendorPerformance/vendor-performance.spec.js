@@ -12,6 +12,61 @@ async function openVendorPerformance(page) {
   await page.goto(VP_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
   await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
   await page.waitForTimeout(1500);
+
+  // The KPI/chart widgets on this page render asynchronously after the shell
+  // loads, with highly variable timing on the shared UAT environment. Wait
+  // for one of the first widgets to actually appear so tests that check page
+  // content don't race the load.
+  await page
+    .getByText(/Successful Orders/i)
+    .first()
+    .waitFor({ state: 'visible', timeout: 20000 })
+    .catch(() => {});
+}
+
+/**
+ * The store dropdown is an ngx-mat-select-search: its first mat-option is a
+ * disabled wrapper around the embedded search box, and typing into that
+ * search box is unreliable via automation (its filtered results depend on a
+ * live backend query, which can come back empty regardless of how the text
+ * is entered). The real store list renders on its own shortly after the
+ * panel opens, so select directly from that instead of relying on the
+ * search box: prefer an option matching `preferredName`, but fall back to
+ * any real (non-disabled) store so the test tolerates demo-data drift.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} preferredName
+ * @returns {Promise<string|null>} the store name actually selected, or null
+ */
+async function selectStoreByName(page, preferredName) {
+  const storeDropdown = page.locator('mat-select').first();
+  const dropdownVisible = await storeDropdown.isVisible().catch(() => false);
+  if (!dropdownVisible) return null;
+
+  await storeDropdown.click();
+
+  const realOptions = page.locator('mat-option:not(.mat-option-disabled)');
+  await realOptions.first().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+
+  const optionCount = await realOptions.count().catch(() => 0);
+  if (optionCount === 0) {
+    await page.keyboard.press('Escape').catch(() => {});
+    return null;
+  }
+
+  const preferred = realOptions.filter({ hasText: preferredName }).first();
+  const preferredVisible = await preferred.isVisible().catch(() => false);
+  const target = preferredVisible ? preferred : realOptions.first();
+  const selectedName = (await target.innerText().catch(() => '')).trim();
+
+  await target.click();
+
+  // This mat-select is multi-select (aria-multiselectable="true"), so it does
+  // not auto-close after picking an option — close it explicitly, otherwise
+  // its overlay keeps intercepting clicks on the rest of the page.
+  await page.keyboard.press('Escape').catch(() => {});
+  await page.locator('.cdk-overlay-backdrop').first().waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
+
+  return selectedName || null;
 }
 
 // ============================================================
@@ -30,7 +85,7 @@ test('VP-01: Vendor Performance page loads and URL is correct', async ({ page })
   const bodyText = await page.innerText('body');
   expect(bodyText.length).toBeGreaterThan(100);
 
-  console.log('âœ… VP-01 PASSED: URL verified:', currentUrl);
+  console.log('✅ VP-01 PASSED: URL verified:', currentUrl);
 });
 
 // ============================================================
@@ -47,16 +102,16 @@ test('VP-02: Sidebar shows Vendor Performance link correctly', async ({ page }) 
   const linkVisible = await vpLink.isVisible().catch(() => false);
 
   if (!linkVisible) {
-    console.log('âš ï¸ VP-02 INFO: Vendor Performance sidebar link not found in expected location.');
+    console.log('⚠️ VP-02 INFO: Vendor Performance sidebar link not found in expected location.');
     return;
   }
 
   // Verify that the link text contains "Vendor Performance"
   const linkText = (await vpLink.innerText().catch(() => '')).trim();
-  console.log(`â„¹ï¸ Sidebar link text: "${linkText}"`);
+  console.log(`ℹ️ Sidebar link text: "${linkText}"`);
   expect(linkText.toLowerCase()).toContain('vendor');
 
-  console.log('âœ… VP-02 PASSED: Vendor Performance sidebar link verified.');
+  console.log('✅ VP-02 PASSED: Vendor Performance sidebar link verified.');
 });
 
 // ============================================================
@@ -74,16 +129,16 @@ test('VP-03: Vendor Performance page title/header is visible', async ({ page }) 
 
   if (headingVisible) {
     const headingText = (await heading.textContent().catch(() => '')).trim() || '';
-    console.log(`â„¹ï¸ Page heading found: "${headingText}"`);
+    console.log(`ℹ️ Page heading found: "${headingText}"`);
     expect(headingText.length).toBeGreaterThan(0);
   } else {
     // Fallback: at minimum the page body should mention Vendor Performance
     const bodyText = await page.innerText('body');
     expect(bodyText.toLowerCase()).toContain('vendor');
-    console.log('â„¹ï¸ No explicit heading found, but page body contains "vendor" keyword.');
+    console.log('ℹ️ No explicit heading found, but page body contains "vendor" keyword.');
   }
 
-  console.log('âœ… VP-03 PASSED: Page title/header verified.');
+  console.log('✅ VP-03 PASSED: Page title/header verified.');
 });
 
 // ============================================================
@@ -98,17 +153,17 @@ test('VP-04: Filter dropdown elements are visible', async ({ page }) => {
   // Check filter dropdowns (mat-select elements) - use broader selector
   const matSelects = page.locator('mat-select');
   const selectCount = await matSelects.count().catch(() => 0);
-  console.log(`â„¹ï¸ mat-select elements found: ${selectCount}`);
+  console.log(`ℹ️ mat-select elements found: ${selectCount}`);
 
   // Check text input fields (e.g., date text input)
   const textInputs = page.locator('input.mat-input-element, input[type="text"]');
   const inputCount = await textInputs.count().catch(() => 0);
-  console.log(`â„¹ï¸ Input fields found: ${inputCount}`);
+  console.log(`ℹ️ Input fields found: ${inputCount}`);
 
   // At least one filter control should exist
   expect(selectCount + inputCount).toBeGreaterThan(0);
 
-  console.log('âœ… VP-04 PASSED: Filter elements verified. Selects:', selectCount, 'Inputs:', inputCount);
+  console.log('✅ VP-04 PASSED: Filter elements verified. Selects:', selectCount, 'Inputs:', inputCount);
 });
 
 // ============================================================
@@ -124,18 +179,18 @@ test('VP-05: Action buttons are present and visible', async ({ page }) => {
   // Search button (search-btn class)
   const searchBtn = page.locator('button.search-btn, button:has(mat-icon:has-text("search"))').first();
   const searchVisible = await searchBtn.isVisible().catch(() => false);
-  console.log(`â„¹ï¸ Search button visible: ${searchVisible}`);
+  console.log(`ℹ️ Search button visible: ${searchVisible}`);
 
   // Close/clear button (close-btn class)
   const closeBtn = page.locator('button.close-btn, button:has(mat-icon:has-text("close"))').first();
   const closeVisible = await closeBtn.isVisible().catch(() => false);
-  console.log(`â„¹ï¸ Close button visible: ${closeVisible}`);
+  console.log(`ℹ️ Close button visible: ${closeVisible}`);
 
   // Ensure at least one action button is visible (or just skip if none found)
   if (!searchVisible && !closeVisible) {
-    console.log('â„¹ï¸ VP-05 INFO: No action buttons found on this page.');
+    console.log('ℹ️ VP-05 INFO: No action buttons found on this page.');
   } else {
-    console.log('âœ… VP-05 PASSED: Action buttons verified.');
+    console.log('✅ VP-05 PASSED: Action buttons verified.');
   }
 });
 
@@ -144,7 +199,7 @@ test('VP-05: Action buttons are present and visible', async ({ page }) => {
 // ============================================================
 // Checks: Verifies that the main data area inside the
 // table-responsive div is visible.
-//   - div.table-responsive â†’ main data container
+//   - div.table-responsive → main data container
 // ============================================================
 test('VP-06: Data table area is visible', async ({ page }) => {
   await page.waitForTimeout(3000);
@@ -153,17 +208,17 @@ test('VP-06: Data table area is visible', async ({ page }) => {
   // Main data area inside table-responsive div
   const tableArea = page.locator('.table-responsive').first();
   const tableVisible = await tableArea.isVisible().catch(() => false);
-  console.log(`â„¹ï¸ Table area visible: ${tableVisible}`);
+  console.log(`ℹ️ Table area visible: ${tableVisible}`);
 
   // Fallback: Check any table or list container
   const anyTable = page.locator('table, mat-table, .table-responsive').first();
   const anyVisible = await anyTable.isVisible().catch(() => false);
-  console.log(`â„¹ï¸ Any table/list visible: ${anyVisible}`);
+  console.log(`ℹ️ Any table/list visible: ${anyVisible}`);
 
   if (!anyVisible) {
-    console.log('âš ï¸ VP-06 INFO: No data table found on this page.');
+    console.log('⚠️ VP-06 INFO: No data table found on this page.');
   } else {
-    console.log('âœ… VP-06 PASSED: Data area verified.');
+    console.log('✅ VP-06 PASSED: Data area verified.');
   }
 });
 
@@ -177,15 +232,15 @@ test('VP-07: Page has meaningful content (not blank)', async ({ page }) => {
   await openVendorPerformance(page);
 
   const bodyText = await page.innerText('body');
-  console.log(`â„¹ï¸ Body text length: ${bodyText.length} chars`);
+  console.log(`ℹ️ Body text length: ${bodyText.length} chars`);
   expect(bodyText.length).toBeGreaterThan(200);
 
   // Check if sidebar and navbar are properly rendered
   const sidebarExists = await page.locator('.sidebar').isVisible().catch(() => false);
   const navbarExists = await page.locator('nav.navbar').isVisible().catch(() => false);
-  console.log(`â„¹ï¸ Sidebar exists: ${sidebarExists}, Navbar exists: ${navbarExists}`);
+  console.log(`ℹ️ Sidebar exists: ${sidebarExists}, Navbar exists: ${navbarExists}`);
 
-  console.log('âœ… VP-07 PASSED: Page has meaningful content.');
+  console.log('✅ VP-07 PASSED: Page has meaningful content.');
 });
 
 // ============================================================
@@ -203,7 +258,7 @@ test('VP-08: Full page screenshot for visual reference', async ({ page }) => {
   const navbarVisible = await page.locator('nav.navbar').isVisible().catch(() => false);
 
   if (!sidebarVisible || !navbarVisible) {
-    console.log('âš ï¸ VP-08 INFO: Sidebar or navbar not visible, skipping screenshot.');
+    console.log('⚠️ VP-08 INFO: Sidebar or navbar not visible, skipping screenshot.');
     return;
   }
 
@@ -218,48 +273,41 @@ test('VP-08: Full page screenshot for visual reference', async ({ page }) => {
   if (sidebarBox) {
     expect(sidebarBox.width).toBeGreaterThan(0);
     expect(sidebarBox.height).toBeGreaterThan(100);
-    console.log('âœ… VP-08 PASSED: Screenshot saved â†’ test-results/vendor-performance-layout.png');
+    console.log('✅ VP-08 PASSED: Screenshot saved → test-results/vendor-performance-layout.png');
   } else {
-    console.log('âš ï¸ VP-08 INFO: Sidebar has no bounding box.');
+    console.log('⚠️ VP-08 INFO: Sidebar has no bounding box.');
   }
 });
 
 // ============================================================
-// VP-09: Excel Export and Row View/Edit Actions
+// VP-09: Chart Export Menu
 // ============================================================
-// Checks: Verifies that the Excel Export button works and
-// that row-level View/Edit actions can be triggered.
+// Checks: This page has no data table/rows — its charts (Order
+// Health, Top Selling Items/Areas) expose a Highcharts export
+// icon instead of a plain "Export" button. Verifies that icon
+// opens a menu with Download SVG/PNG/CSV options.
 // ============================================================
-test('VP-09: Verify Excel Export and Row View/Edit actions', async ({ page }) => {
+test('VP-09: Chart export menu offers Download SVG/PNG/CSV', async ({ page }) => {
   await openVendorPerformance(page);
 
-  const exportBtn = page.locator('button:has-text("Export"), button:has-text("Download"), button:has-text("Excel")').first();
-  if (await exportBtn.isVisible().catch(() => false) && await exportBtn.isEnabled().catch(() => false)) {
-    await exportBtn.click();
-    await page.waitForTimeout(1500);
-    console.log('âœ… Excel Download/Export triggered!');
-  } else {
-    console.log('â„¹ï¸ Export button not visible or not enabled.');
+  const exportIcon = page.locator('.highcharts-contextbutton, .highcharts-exporting-group').first();
+  const iconVisible = await exportIcon.isVisible({ timeout: 15000 }).catch(() => false);
+
+  if (!iconVisible) {
+    console.log('ℹ️ VP-09 INFO: Chart export icon not found.');
+    return;
   }
 
-  const rows = page.locator('mat-row, tbody tr');
-  const rowCount = await rows.count().catch(() => 0);
-  if (rowCount > 0) {
-    const firstRow = rows.first();
-    const actionBtn = firstRow.locator('mat-icon:has-text("edit"), mat-icon:has-text("visibility"), button[title*="Edit"], button[title*="View"], mat-icon:has-text("more_vert")').first();
-    if (await actionBtn.isVisible().catch(() => false)) {
-      await actionBtn.click();
-      await page.waitForTimeout(800);
-      await page.keyboard.press('Escape');
-      console.log('âœ… View/Edit action checked!');
-    } else {
-      console.log('â„¹ï¸ No row action button found.');
-    }
-  } else {
-    console.log('â„¹ï¸ No rows found to test row actions.');
-  }
+  await exportIcon.click();
+  await page.waitForTimeout(800);
 
-  console.log('âœ… VP-09 PASSED: Export and row actions verified.');
+  const menuItems = await page.locator('.highcharts-menu-item').allInnerTexts().catch(() => []);
+  console.log(`ℹ️ Export menu items: ${JSON.stringify(menuItems)}`);
+  await page.keyboard.press('Escape').catch(() => {});
+
+  expect(menuItems.some((t) => /Download (SVG|PNG|CSV)/i.test(t))).toBe(true);
+
+  console.log('✅ VP-09 PASSED: Chart export menu verified.');
 });
 
 // ============================================================
@@ -279,10 +327,10 @@ test('VP-10: Date range filter allows selecting Today, Week, Month', async ({ pa
   if (todayExists) {
     await todayBtn.click();
     await page.waitForTimeout(1000);
-    console.log('âœ… Clicked "Today" button');
+    console.log('✅ Clicked "Today" button');
     clickedCount++;
   } else {
-    console.log('â„¹ï¸ "Today" button not found.');
+    console.log('ℹ️ "Today" button not found.');
   }
 
   // Click 'Week' button (with fallback)
@@ -291,10 +339,10 @@ test('VP-10: Date range filter allows selecting Today, Week, Month', async ({ pa
   if (weekExists) {
     await weekBtn.click();
     await page.waitForTimeout(1000);
-    console.log('âœ… Clicked "Week" button');
+    console.log('✅ Clicked "Week" button');
     clickedCount++;
   } else {
-    console.log('â„¹ï¸ "Week" button not found.');
+    console.log('ℹ️ "Week" button not found.');
   }
 
   // Click 'Month' button (with fallback)
@@ -303,16 +351,16 @@ test('VP-10: Date range filter allows selecting Today, Week, Month', async ({ pa
   if (monthExists) {
     await monthBtn.click();
     await page.waitForTimeout(1000);
-    console.log('âœ… Clicked "Month" button');
+    console.log('✅ Clicked "Month" button');
     clickedCount++;
   } else {
-    console.log('â„¹ï¸ "Month" button not found.');
+    console.log('ℹ️ "Month" button not found.');
   }
 
   if (clickedCount === 0) {
-    console.log('âš ï¸ VP-10 INFO: No date range buttons found on the page.');
+    console.log('⚠️ VP-10 INFO: No date range buttons found on the page.');
   } else {
-    console.log(`âœ… VP-10 PASSED: Successfully clicked ${clickedCount} date range buttons.`);
+    console.log(`✅ VP-10 PASSED: Successfully clicked ${clickedCount} date range buttons.`);
   }
 });
 
@@ -335,8 +383,8 @@ test('VP-11: Custom Date Filter works correctly', async ({ page }) => {
   const inputCount = await dateInputs.count().catch(() => 0);
   
   if (inputCount === 0) {
-    console.log('âš ï¸ VP-11 INFO: No date input fields found.');
-    console.log('âœ… VP-11 PASSED: Date filter interaction verified.');
+    console.log('⚠️ VP-11 INFO: No date input fields found.');
+    console.log('✅ VP-11 PASSED: Date filter interaction verified.');
     return;
   }
 
@@ -344,8 +392,8 @@ test('VP-11: Custom Date Filter works correctly', async ({ page }) => {
   const isVisible = await firstDateInput.isVisible().catch(() => false);
 
   if (!isVisible) {
-    console.log('âš ï¸ VP-11 INFO: Date input not visible.');
-    console.log('âœ… VP-11 PASSED: Date filter interaction verified.');
+    console.log('⚠️ VP-11 INFO: Date input not visible.');
+    console.log('✅ VP-11 PASSED: Date filter interaction verified.');
     return;
   }
 
@@ -360,10 +408,10 @@ test('VP-11: Custom Date Filter works correctly', async ({ page }) => {
   if (day10Visible) {
     await day10.click({ force: true }).catch(() => {});
     await page.waitForTimeout(800);
-    console.log('âœ… Selected day 10 for date range');
+    console.log('✅ Selected day 10 for date range');
   } else {
     await page.keyboard.press('Escape').catch(() => {});
-    console.log('â„¹ï¸ Calendar not available');
+    console.log('ℹ️ Calendar not available');
   }
 
   // Click the Search button to apply the filter (optional)
@@ -371,10 +419,10 @@ test('VP-11: Custom Date Filter works correctly', async ({ page }) => {
   if (await searchBtn.isVisible().catch(() => false)) {
     await searchBtn.click().catch(() => {});
     await page.waitForTimeout(1500);
-    console.log('âœ… Clicked Search button after date filter.');
+    console.log('✅ Clicked Search button after date filter.');
   }
 
-  console.log('âœ… VP-11 PASSED: Custom Date filter verified.');
+  console.log('✅ VP-11 PASSED: Custom Date filter verified.');
 });
 
 // ============================================================
@@ -386,50 +434,22 @@ test('VP-11: Custom Date Filter works correctly', async ({ page }) => {
 test('VP-12: Store selection search feature works correctly', async ({ page }) => {
   await openVendorPerformance(page);
 
-  // Find the Store selection dropdown (mat-select)
-  const storeDropdown = page.locator('mat-select').first();
-  const dropdownExists = await storeDropdown.isVisible().catch(() => false);
-  
-  if (!dropdownExists) {
-    console.log('âš ï¸ VP-12 INFO: No store dropdown found on the page.');
+  const selectedStore = await selectStoreByName(page, 'Cafe Asiana');
+  if (!selectedStore) {
+    console.log('⚠️ VP-12 INFO: No selectable store options available.');
     return;
   }
-
-  await storeDropdown.click();
-  await page.waitForTimeout(1000);
-
-  // Detect any existing real store options
-  const options = page.locator('mat-option');
-  const optionCount = await options.count().catch(() => 0);
-
-  if (optionCount > 0) {
-    const firstStoreName = (await options.first().innerText().catch(() => '')).trim();
-    if (firstStoreName && !firstStoreName.toLowerCase().includes('no matching')) {
-      console.log(`â„¹ï¸ Found store to test: "${firstStoreName}"`);
-      try {
-        await options.first().click();
-        console.log(`âœ… Selected store: ${firstStoreName}`);
-      } catch (e) {
-        console.log(`â„¹ï¸ Could not select store option.`);
-      }
-    } else {
-      console.log('â„¹ï¸ First store option invalid, closing dropdown.');
-      await page.keyboard.press('Escape');
-    }
-  } else {
-    console.log('â„¹ï¸ No store options available, closing dropdown.');
-    await page.keyboard.press('Escape');
-  }
+  console.log(`✅ Selected store: ${selectedStore}`);
 
   // Click the Search button to apply the store filter (optional)
   const searchBtn = page.locator('button.search-btn, button:has(mat-icon:has-text("search"))').first();
   if (await searchBtn.isVisible().catch(() => false)) {
     await searchBtn.click();
     await page.waitForTimeout(2000);
-    console.log('âœ… Clicked Search button after store selection.');
+    console.log('✅ Clicked Search button after store selection.');
   }
 
-  console.log('âœ… VP-12 PASSED: Store selection verified.');
+  console.log('✅ VP-12 PASSED: Store selection verified.');
 });
 
 // ============================================================
@@ -450,11 +470,11 @@ test('VP-13: Pagination - Next and Previous buttons work correctly', async ({ pa
   // Step 1: Find mat-paginator on the current view
   const allPaginators = page.locator('mat-paginator');
   const paginatorCount = await allPaginators.count().catch(() => 0);
-  console.log(`â„¹ï¸ Found ${paginatorCount} paginator(s) on the page.`);
+  console.log(`ℹ️ Found ${paginatorCount} paginator(s) on the page.`);
 
   if (paginatorCount === 0) {
-    console.log('âš ï¸ VP-13 INFO: No pagination found on this page.');
-    console.log('âœ… VP-13 PASSED: Pagination check completed.');
+    console.log('⚠️ VP-13 INFO: No pagination found on this page.');
+    console.log('✅ VP-13 PASSED: Pagination check completed.');
     return;
   }
 
@@ -472,33 +492,179 @@ test('VP-13: Pagination - Next and Previous buttons work correctly', async ({ pa
   if (isNextVisible && isNextEnabled) {
     try {
       const labelBefore = (await rangeLabel.textContent().catch(() => '')).trim() || '';
-      console.log(`â„¹ï¸ Range label before Next: "${labelBefore}"`);
+      console.log(`ℹ️ Range label before Next: "${labelBefore}"`);
 
       await nextBtn.click();
       await page.waitForTimeout(1500);
 
       const labelAfter = (await rangeLabel.textContent().catch(() => '')).trim() || '';
-      console.log(`â„¹ï¸ Range label after Next: "${labelAfter}"`);
+      console.log(`ℹ️ Range label after Next: "${labelAfter}"`);
 
       if (labelAfter !== labelBefore) {
-        console.log('âœ… Next button clicked successfully');
+        console.log('✅ Next button clicked successfully');
         
         const isPrevEnabled = await prevBtn.isEnabled().catch(() => false);
         if (isPrevEnabled) {
           await prevBtn.click();
           await page.waitForTimeout(1500);
-          console.log('âœ… Previous button clicked successfully');
+          console.log('✅ Previous button clicked successfully');
         }
       }
     } catch (e) {
-      console.log(`â„¹ï¸ Error during pagination interaction: ${e.message}`);
+      console.log(`ℹ️ Error during pagination interaction: ${e.message}`);
     }
-    console.log('âœ… VP-13 PASSED: Pagination buttons verified.');
+    console.log('✅ VP-13 PASSED: Pagination buttons verified.');
   } else if (isNextVisible) {
-    console.log('âš ï¸ VP-13 INFO: Next button found but disabled â€“ data fits in a single page.');
-    console.log('âœ… VP-13 PASSED: Pagination check completed.');
+    console.log('⚠️ VP-13 INFO: Next button found but disabled – data fits in a single page.');
+    console.log('✅ VP-13 PASSED: Pagination check completed.');
   } else {
-    console.log('âš ï¸ VP-13 INFO: Next button not visible â€“ likely no pagination needed.');
-    console.log('âœ… VP-13 PASSED: Pagination check completed.');
+    console.log('⚠️ VP-13 INFO: Next button not visible – likely no pagination needed.');
+    console.log('✅ VP-13 PASSED: Pagination check completed.');
   }
+});
+
+// ============================================================
+// VP-14: Successful & Failed Orders KPI Cards
+// ============================================================
+// Checks: The two headline KPI cards show order counts and OMR
+// values (the core metrics this page exists to report).
+// ============================================================
+test('VP-14: Successful and Failed Orders KPI cards display order counts and OMR values', async ({ page }) => {
+  await openVendorPerformance(page);
+
+  const successfulCard = page.getByText(/Successful Orders/i).first();
+  await expect(successfulCard).toBeVisible({ timeout: 15000 });
+
+  const failedCard = page.getByText(/Failed Orders/i).first();
+  await expect(failedCard).toBeVisible({ timeout: 15000 });
+
+  // The KPI labels render before their numeric values finish loading via a
+  // separate async call, so poll instead of reading body text right away.
+  await expect
+    .poll(async () => page.locator('body').innerText(), { timeout: 20000 })
+    .toMatch(/Successful Orders[\s\S]{0,50}\d+/i);
+
+  const bodyText = await page.locator('body').innerText();
+  expect(bodyText).toMatch(/Failed Orders[\s\S]{0,50}\d+/i);
+  expect(bodyText).toMatch(/OMR/);
+
+  console.log('✅ VP-14 PASSED: Successful and Failed Orders KPI cards verified.');
+});
+
+// ============================================================
+// VP-15: Additional Performance Metrics
+// ============================================================
+// Checks: Secondary metrics (Loss Due to Cancellation, Customers,
+// Average Response Time, Vendor Delay) are present on the page.
+// ============================================================
+test('VP-15: Additional performance metrics are visible', async ({ page }) => {
+  await openVendorPerformance(page);
+
+  const metrics = ['Loss Due to Cancellation', 'Customers', 'Average Response Time', 'Vendor Delay'];
+
+  // These KPI widgets render asynchronously after the initial page load, so
+  // poll for the body text instead of checking isVisible() once — isVisible()
+  // reports the current state immediately and does not wait/retry.
+  await expect
+    .poll(
+      async () => {
+        const bodyText = await page.locator('body').innerText();
+        return metrics.some((m) => bodyText.toLowerCase().includes(m.toLowerCase()));
+      },
+      { timeout: 20000, message: 'At least one additional performance metric should be visible' }
+    )
+    .toBe(true);
+
+  const bodyText = await page.locator('body').innerText();
+  for (const metric of metrics) {
+    const found = bodyText.toLowerCase().includes(metric.toLowerCase());
+    console.log(`  ${found ? '✅' : 'ℹ️'} "${metric}" visible: ${found}`);
+  }
+
+  console.log('✅ VP-15 PASSED: Additional performance metrics verified.');
+});
+
+// ============================================================
+// VP-16: Order Health Chart
+// ============================================================
+// Checks: The Order Health donut chart shows the Excellent/Good/
+// Poor breakdown with percentage values.
+// ============================================================
+test('VP-16: Order Health chart shows Excellent/Good/Poor breakdown', async ({ page }) => {
+  await openVendorPerformance(page);
+
+  const orderHealthLabel = page.getByText(/Order Health/i).first();
+  await expect(orderHealthLabel).toBeVisible({ timeout: 20000 });
+
+  // The Excellent/Good/Poor breakdown renders after the chart's own async
+  // data load, which can lag behind the "Order Health" label itself.
+  await expect
+    .poll(
+      async () => {
+        const bodyText = await page.locator('body').innerText();
+        return /Excellent/i.test(bodyText) && /Good/i.test(bodyText) && /Poor/i.test(bodyText);
+      },
+      { timeout: 20000, message: 'Order Health chart should show Excellent/Good/Poor categories' }
+    )
+    .toBe(true);
+
+  const bodyText = await page.locator('body').innerText();
+  expect(/\d{1,3}%/.test(bodyText)).toBe(true);
+
+  console.log('✅ VP-16 PASSED: Order Health chart breakdown verified.');
+});
+
+// ============================================================
+// VP-17: Top Selling Items / Areas Tab Switch
+// ============================================================
+// Checks: Both tabs on the top-selling chart are present and
+// clickable without breaking the page.
+// ============================================================
+test('VP-17: Top Selling Items and Top Selling Areas tabs switch correctly', async ({ page }) => {
+  await openVendorPerformance(page);
+
+  const itemsTab = page.getByText(/Top Selling Items/i).first();
+  const areasTab = page.getByText(/Top Selling Areas/i).first();
+
+  await expect(areasTab).toBeVisible({ timeout: 25000 });
+  await expect(itemsTab).toBeVisible({ timeout: 25000 });
+
+  await itemsTab.click().catch(() => {});
+  await page.waitForTimeout(1000);
+  console.log('ℹ️ Clicked "Top Selling Items" tab.');
+
+  await areasTab.click().catch(() => {});
+  await page.waitForTimeout(1000);
+  console.log('ℹ️ Clicked "Top Selling Areas" tab.');
+
+  console.log('✅ VP-17 PASSED: Top Selling tab switch verified.');
+});
+
+// ============================================================
+// VP-18: Store Filter Refreshes KPI View
+// ============================================================
+// Checks: Selecting a store and searching keeps the KPI view
+// populated (no blank/error state after filtering).
+// ============================================================
+test('VP-18: Selecting a store and searching refreshes the KPI view without errors', async ({ page }) => {
+  await openVendorPerformance(page);
+
+  const selectedStore = await selectStoreByName(page, 'Cafe Asiana');
+  if (!selectedStore) {
+    console.log('⚠️ VP-18 INFO: No selectable store options available.');
+    return;
+  }
+  console.log(`ℹ️ Selected store: ${selectedStore}`);
+
+  const searchBtn = page.locator('button.search-btn, button:has(mat-icon:has-text("search"))').first();
+  if (await searchBtn.isVisible().catch(() => false)) {
+    await searchBtn.click({ timeout: 10000 });
+    await page.waitForLoadState('networkidle').catch(() => {});
+    await page.waitForTimeout(1500);
+  }
+
+  const bodyAfter = await page.locator('body').innerText();
+  expect(bodyAfter.length).toBeGreaterThan(200);
+
+  console.log('✅ VP-18 PASSED: Store filter applied without breaking the KPI view.');
 });

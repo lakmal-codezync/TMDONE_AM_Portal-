@@ -626,3 +626,4 @@ test('AUTH-20: Login page is usable on mobile viewport', async ({ page }) => {
 
   console.log('AUTH-20 PASSED: Login page is usable on mobile viewport.');
 });
+
