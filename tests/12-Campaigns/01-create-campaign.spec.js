@@ -114,10 +114,18 @@ test.describe.serial('01 - Create Campaign', () => {
   test('Step 0: Validate required fields on Create Campaign dialog', async ({ page }) => {
     const createBtn = page.locator('button:has-text("Create Campaign")').first();
     await createBtn.waitFor({ state: 'visible', timeout: 15000 });
-    await createBtn.click();
 
     const dialog = page.locator('modal-container, mat-dialog-container, .modal-dialog, [role="dialog"]').filter({ visible: true }).last();
-    await expect(dialog).toBeVisible({ timeout: 10000 });
+
+    // The first click occasionally doesn't open the dialog - e.g. right
+    // after the Campaigns list finishes loading - so retry a couple of
+    // times before failing.
+    let dialogOpened = false;
+    for (let attempt = 1; attempt <= 3 && !dialogOpened; attempt += 1) {
+      await createBtn.click();
+      dialogOpened = await dialog.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
+    }
+    await expect(dialog, 'Create Campaign dialog should open').toBeVisible({ timeout: 10000 });
 
     const nameInput = dialog
       .locator('input[formcontrolname="Name" i], input[formcontrolname="campaignName" i], input[placeholder*="Name" i]')

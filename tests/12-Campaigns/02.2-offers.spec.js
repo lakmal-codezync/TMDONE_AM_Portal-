@@ -6,7 +6,10 @@ const OFFER_IMAGE_PATHS = [
   'tests/fixtures/offer-image.png',
   'tests/fixtures/offer-image-ar.png',
 ];
-const TARGET_STORE_NAME = 'Cafe Asiana';
+// "Cafe Asiana" is no longer reliably present in the shared demo store
+// list (see the Stores suite, which hit the same issue); Food House is
+// the confirmed-present store used as the canonical test target.
+const TARGET_STORE_NAME = 'Food House';
 
 test.describe.serial('02.2 - Campaign View Offers', () => {
   const pad = (/** @type {number} */ n) => String(n).padStart(2, '0');
@@ -108,7 +111,14 @@ test.describe.serial('02.2 - Campaign View Offers', () => {
     await page.waitForTimeout(400);
 
     const overlayOptions = page.locator('mat-option, .mat-option, .cdk-overlay-pane mat-option');
-    const count = await overlayOptions.count().catch(() => 0);
+    // Options can populate asynchronously (e.g. Target Type depends on
+    // context loaded after the dialog opens) - poll briefly rather than
+    // giving up on the very first empty check.
+    let count = await overlayOptions.count().catch(() => 0);
+    for (let attempt = 0; attempt < 8 && count === 0; attempt += 1) {
+      await page.waitForTimeout(400);
+      count = await overlayOptions.count().catch(() => 0);
+    }
     if (count === 0) {
       const localOptions = dropdown.locator('mat-option, .mat-option');
       if (await localOptions.nth(optionIndex).isVisible().catch(() => false)) {

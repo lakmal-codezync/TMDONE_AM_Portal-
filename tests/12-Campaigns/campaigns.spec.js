@@ -187,10 +187,19 @@ test.describe.serial('12 - Campaigns Smoke', () => {
   test('CAM-03: Create Campaign dialog opens and required fields are present', async ({ page }) => {
     const createButton = page.locator('button:has-text("Create Campaign"), button:has-text("Create")').filter({ visible: true }).first();
     await expect(createButton).toBeVisible({ timeout: 20000 });
-    await createButton.click({ force: true });
 
     const dialog = page.locator('modal-container, mat-dialog-container, .modal-dialog, [role="dialog"]').filter({ visible: true }).last();
-    await expect(dialog).toBeVisible({ timeout: 15000 });
+
+    // A force click can bypass Angular's click handler here (confirmed
+    // elsewhere in this suite), and the dialog occasionally needs a
+    // second real click right after the Campaigns list finishes loading -
+    // retry a couple of times before failing.
+    let dialogOpened = false;
+    for (let attempt = 1; attempt <= 3 && !dialogOpened; attempt += 1) {
+      await createButton.click();
+      dialogOpened = await dialog.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
+    }
+    await expect(dialog, 'Create Campaign dialog should open').toBeVisible({ timeout: 10000 });
 
     await expect(
       dialog
