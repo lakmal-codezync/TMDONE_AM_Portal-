@@ -2,9 +2,10 @@
 // ============================================================
 // Builds an HTML email summary from the Playwright JSON report
 // (test-results/results.json). One row per test: testID,
-// explanation, and status (pass/fail/flaky/skipped). Writes the
-// HTML to email-summary.html and, when run in GitHub Actions,
-// appends subject/status/counts to $GITHUB_OUTPUT.
+// explanation, status (pass/fail/flaky/skipped), and - for any
+// failed or flaky test - the reason it failed. Writes the HTML to
+// email-summary.html and, when run in GitHub Actions, appends
+// subject/status/counts to $GITHUB_OUTPUT.
 // ============================================================
 
 import fs from 'node:fs';
@@ -42,17 +43,45 @@ function statusColor(label) {
   }
 }
 
+/** @param {string} text */
+function stripAnsi(text) {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+/**
+ * Pulls a short, readable reason out of a test's error, if it has one.
+ * Playwright error messages are often multi-line (error type, locator,
+ * expected/received) - keep the first few lines so the email stays
+ * scannable rather than dumping a full stack trace.
+ * @param {any} test
+ */
+function getFailureReason(test) {
+  const results = test.results || [];
+  for (let i = results.length - 1; i >= 0; i -= 1) {
+    const message = results[i]?.error?.message || results[i]?.errors?.[0]?.message;
+    if (message) {
+      const lines = stripAnsi(message).trim().split('\n').map((l) => l.trim()).filter(Boolean);
+      const summary = lines.slice(0, 3).join(' | ');
+      return summary.length > 400 ? `${summary.slice(0, 400)}…` : summary;
+    }
+  }
+  return '';
+}
+
 /**
  * @param {any} suite
  * @param {string} file
- * @param {Array<{file: string, testId: string, explain: string, status: string}>} rows
+ * @param {Array<{file: string, testId: string, explain: string, status: string, reason: string}>} rows
  */
 function walkSuite(suite, file, rows) {
   const currentFile = suite.file || file;
   for (const spec of suite.specs || []) {
     for (const test of spec.tests || []) {
       const { testId, explain } = splitTestId(spec.title);
-      rows.push({ file: currentFile, testId, explain, status: statusLabel(test.status) });
+      const status = statusLabel(test.status);
+      const reason = (status === 'FAIL' || status === 'FLAKY') ? getFailureReason(test) : '';
+      rows.push({ file: currentFile, testId, explain, status, reason });
     }
   }
   for (const sub of suite.suites || []) {
@@ -68,7 +97,7 @@ function main() {
   }
 
   const report = JSON.parse(fs.readFileSync(REPORT_PATH, 'utf8'));
-  /** @type {Array<{file: string, testId: string, explain: string, status: string}>} */
+  /** @type {Array<{file: string, testId: string, explain: string, status: string, reason: string}>} */
   const rows = [];
   for (const suite of report.suites || []) {
     walkSuite(suite, suite.title, rows);
@@ -98,6 +127,7 @@ function main() {
           <td style="padding:6px 10px;border:1px solid #d0d7de;font-family:monospace;">${row.testId}</td>
           <td style="padding:6px 10px;border:1px solid #d0d7de;">${escapeHtml(row.explain)}</td>
           <td style="padding:6px 10px;border:1px solid #d0d7de;font-weight:bold;color:${statusColor(row.status)};">${row.status}</td>
+          <td style="padding:6px 10px;border:1px solid #d0d7de;font-family:monospace;font-size:12px;color:#57606a;">${row.reason ? escapeHtml(row.reason) : '-'}</td>
         </tr>`
         )
         .join('');
@@ -108,6 +138,7 @@ function main() {
           <th style="padding:6px 10px;border:1px solid #d0d7de;text-align:left;">Test ID</th>
           <th style="padding:6px 10px;border:1px solid #d0d7de;text-align:left;">Description</th>
           <th style="padding:6px 10px;border:1px solid #d0d7de;text-align:left;">Status</th>
+          <th style="padding:6px 10px;border:1px solid #d0d7de;text-align:left;">Reason (if failed)</th>
         </tr>
         ${tr}
       </table>`;
