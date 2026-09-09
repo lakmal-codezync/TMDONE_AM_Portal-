@@ -53,7 +53,7 @@ jobs:
           username: ${{ secrets.GMAIL_ADDRESS }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
           subject: ${{ steps.summary.outputs.subject }}
-          to: lakmal@codezync.com,dulara@codezync.com,miyuru@codezync.com,nimsara@codezync.com,arshaak@codezync.com,aneef@codezync.com
+          to: lakmal@codezync.com,dulara@codezync.com,miyuru@codezync.com,nimsara@codezync.com,arshaak@codezync.com
           from: TMDone Playwright CI <${{ secrets.GMAIL_ADDRESS }}>
           html_body: file://email-summary.html
 
