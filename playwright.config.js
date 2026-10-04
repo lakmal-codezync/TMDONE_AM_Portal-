@@ -3,7 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 /**
  * TMDone Admin Console - Playwright Configuration
- * Base URL: https://consoledemo.uat.v3.dr.tmd1.org
+ * Base URL: https://console.demo.dr.tmd1.org
  */
 export default defineConfig({
   // Test folder.
@@ -31,7 +31,7 @@ export default defineConfig({
   // Common settings for all tests.
   use: {
     // TMDone Admin demo URL.
-    baseURL: 'https://consoledemo.uat.v3.dr.tmd1.org',
+    baseURL: 'https://console.demo.dr.tmd1.org',
 
     // Capture screenshots on failure.
     screenshot: 'only-on-failure',

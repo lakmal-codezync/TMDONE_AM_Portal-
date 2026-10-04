@@ -89,7 +89,7 @@ async function applyCachedAuthState(page) {
 export const CREDENTIALS = {
   email: process.env.TMDONE_EMAIL || '',
   password: process.env.TMDONE_PASSWORD || '',
-  baseUrl: process.env.TMDONE_BASE_URL || 'https://consoledemo.uat.v3.dr.tmd1.org',
+  baseUrl: process.env.TMDONE_BASE_URL || 'https://console.demo.dr.tmd1.org',
   get loginUrl() {
     return `${this.baseUrl}/#/authentication/signin`;
   },

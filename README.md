@@ -10,7 +10,7 @@ End-to-end Playwright automation suite for the TMDone Admin Console.
 
 ## Project Overview
 
-This repository validates the main admin portal workflows against the UAT console at `https://consoledemo.uat.v3.dr.tmd1.org`.
+This repository validates the main admin portal workflows against the UAT console at `https://console.demo.dr.tmd1.org`.
 
 Covered areas:
 
@@ -110,7 +110,7 @@ Generated screenshots are saved in `docs/screenshots/` as 1440x900 PNG files.
 
 ## Playwright Configuration
 
-- Base URL: `https://consoledemo.uat.v3.dr.tmd1.org`
+- Base URL: `https://console.demo.dr.tmd1.org`
 - Browser: Chromium
 - Headless by default
 - Screenshots and videos are captured on failure

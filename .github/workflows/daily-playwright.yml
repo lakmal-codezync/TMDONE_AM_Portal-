@@ -16,7 +16,7 @@ jobs:
     env:
       TMDONE_EMAIL: ${{ secrets.TMDONE_EMAIL }}
       TMDONE_PASSWORD: ${{ secrets.TMDONE_PASSWORD }}
-      TMDONE_BASE_URL: ${{ secrets.TMDONE_BASE_URL || 'https://consoledemo.uat.v3.dr.tmd1.org' }}
+      TMDONE_BASE_URL: ${{ secrets.TMDONE_BASE_URL || 'https://console.demo.dr.tmd1.org' }}
       CI: true
 
     steps:
