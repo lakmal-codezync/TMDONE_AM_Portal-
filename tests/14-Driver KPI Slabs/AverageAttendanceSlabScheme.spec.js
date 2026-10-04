@@ -8,6 +8,9 @@ import { test } from '@playwright/test';
 import { DriverKpiSlabSchemePage } from './driver-kpi-slab-helper.js';
 
 const SCHEME_NAME = 'Average Attendance';
+const RUN_STAMP = Date.now();
+const CREATE_WEIGHT = 1000 + (RUN_STAMP % 8000);
+const EDIT_WEIGHT = CREATE_WEIGHT + 1;
 
 class AverageAttendanceSlabScheme extends DriverKpiSlabSchemePage {
   /** @param {import('@playwright/test').Page} page */
@@ -33,20 +36,20 @@ test.describe.serial('Driver KPI Slabs - Average Attendance Slab Scheme', () => 
     await slabScheme.verifyFiltersSearchAndPagination();
   });
 
-  test('AAT-03: Average Attendance create slab flow opens and validates/submits safely', async () => {
+  test('AAT-03: Create a slab and confirm it appears in the table', async () => {
     test.setTimeout(240000);
-    await slabScheme.verifyCreateSlabFlow();
+    await slabScheme.verifyCreateSlabFlow(CREATE_WEIGHT);
   });
 
-  test('AAT-04: Average Attendance view slab action opens expected details', async () => {
-    await slabScheme.verifyViewFlow();
+  test('AAT-04: View the created slab\'s details', async () => {
+    await slabScheme.verifyViewFlow(CREATE_WEIGHT);
   });
 
-  test('AAT-05: Average Attendance edit slab action opens expected form', async () => {
-    await slabScheme.verifyEditFlow();
+  test('AAT-05: Edit the created slab and confirm the update is saved', async () => {
+    await slabScheme.verifyEditFlow(CREATE_WEIGHT, EDIT_WEIGHT);
   });
 
-  test('AAT-06: Average Attendance delete slab action opens confirmation and cancels safely', async () => {
-    await slabScheme.verifyDeleteConfirmation();
+  test('AAT-06: Delete the edited slab and confirm it is removed', async () => {
+    await slabScheme.verifyDeleteConfirmation(EDIT_WEIGHT);
   });
 });

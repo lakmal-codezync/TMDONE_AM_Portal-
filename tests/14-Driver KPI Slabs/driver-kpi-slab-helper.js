@@ -270,10 +270,14 @@ export class DriverKpiSlabSchemePage {
     return buttons.first();
   }
 
-  async fillSlabForm() {
+  /** @param {string | number} weight */
+  async fillSlabForm(weight = '5') {
     const dialog = this.activeDialog();
     const context = await dialog.isVisible().catch(() => false) ? dialog : this.page.locator('body');
 
+    // This form has no scheme/type dropdowns in practice (confirmed live) -
+    // only Minimum Days, Maximum Days, and Weight number fields. These
+    // selectDropdown calls are harmless no-ops if no dropdown matches.
     await this.selectDropdown(context, /kpi|scheme/i, this.schemeName);
     await this.selectDropdown(context, /type/i, 0);
 
@@ -296,7 +300,17 @@ export class DriverKpiSlabSchemePage {
       'input[placeholder*="Weight" i]',
       'mat-form-field:has-text("Weight") input',
       'input[type="number"]',
-    ], '5');
+    ], String(weight));
+  }
+
+  /**
+   * Weight is the only field a test can use to identify its own record
+   * (Min/Max are fixed at 1/10) - find the row whose Weight cell is
+   * exactly this value.
+   * @param {string | number} weight
+   */
+  findRowByWeight(weight) {
+    return this.rows.filter({ hasText: String(weight) });
   }
 
   async verifyFiltersSearchAndPagination() {
@@ -358,46 +372,51 @@ export class DriverKpiSlabSchemePage {
     await expect(this.page.locator('body')).toBeVisible();
   }
 
-  async verifyCreateSlabFlow() {
-    if (!(await this.createButton.isVisible().catch(() => false))) {
-      console.log(`INFO: Create/Add button not visible for ${this.schemeName}.`);
-      await this.verifyPageLoaded();
-      return;
-    }
+  /**
+   * Creates a slab with the given (unique) weight so it can be
+   * identified precisely by later view/edit/delete steps, and verifies
+   * it actually appears in the table afterward - not just that the
+   * create dialog opened and closed.
+   * @param {string | number} weight
+   */
+  async verifyCreateSlabFlow(weight) {
+    await expect(this.createButton, `${this.schemeName} Create button should be visible.`).toBeVisible({ timeout: 20000 });
 
-    await this.createButton.click({ force: true });
+    // A force click does not trigger this button's Angular click handler
+    // (confirmed live - same pattern seen elsewhere in this app's custom
+    // components); a real click is required.
+    await this.createButton.click();
     await this.page.waitForTimeout(1500);
 
     const dialog = this.activeDialog();
-    if (!(await dialog.isVisible({ timeout: 12000 }).catch(() => false))) {
-      console.log(`INFO: Create action did not open a dialog for ${this.schemeName}; page stayed stable.`);
-      await this.verifyPageLoaded();
-      return;
-    }
+    await expect(dialog, `${this.schemeName} create dialog should open.`).toBeVisible({ timeout: 12000 });
 
-    await this.fillSlabForm();
+    await this.fillSlabForm(weight);
 
     const submitButton = await this.enabledButton(dialog, /^(Create|Save|Submit|Add)$/i);
-    await expect(submitButton).toBeVisible({ timeout: 10000 });
+    await expect(submitButton, `${this.schemeName} create submit button should be visible.`).toBeVisible({ timeout: 10000 });
+    await expect(submitButton, `${this.schemeName} create submit button should be enabled once required fields are filled.`).toBeEnabled({ timeout: 10000 });
 
-    if (await submitButton.isEnabled().catch(() => false)) {
-      await submitButton.click({ force: true });
-      await this.page.waitForTimeout(2500);
-      await this.confirmSuccessIfShown();
-    } else {
-      console.log(`INFO: ${this.schemeName} slab form submit is disabled until all required data is complete.`);
-      await this.closeDialog();
-    }
+    await submitButton.click();
+    await this.page.waitForTimeout(2000);
+    await this.confirmSuccessIfShown();
 
-    await this.verifyPageLoaded();
+    await expect(
+      this.findRowByWeight(weight).first(),
+      `A ${this.schemeName} slab with weight ${weight} should appear in the table after creating it.`
+    ).toBeVisible({ timeout: 10000 });
   }
 
   /**
    * @param {RegExp} actionLabel
+   * @param {import('@playwright/test').Locator} [row] defaults to the first row; pass a specific row (e.g. from findRowByWeight) to act on an identified record
    */
-  async openRowAction(actionLabel) {
-    const rowCount = await this.rows.count().catch(() => 0);
-    if (rowCount === 0) return false;
+  async openRowAction(actionLabel, row = this.rows.first()) {
+    // isVisible() is an instant check, not a poll - right after a fresh
+    // navigation the table may not have finished rendering yet, so wait
+    // for the row rather than giving up immediately.
+    const rowReady = await row.waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false);
+    if (!rowReady) return false;
 
     let directActionSelector = 'button:has-text("Edit"), button:has-text("Update"), button:has(mat-icon:has-text("edit"))';
     if (/delete|remove/i.test(actionLabel.source)) {
@@ -411,9 +430,8 @@ export class DriverKpiSlabSchemePage {
       ].join(', ');
     }
 
-    const directAction = this.rows.first().locator(directActionSelector).filter({ visible: true }).first();
-    const rowAction = this.rows
-      .first()
+    const directAction = row.locator(directActionSelector).filter({ visible: true }).first();
+    const rowAction = row
       .locator(
         'button:has(mat-icon:has-text("more_vert")), ' +
         'button:has(mat-icon:has-text("more_horiz")), ' +
@@ -452,7 +470,10 @@ export class DriverKpiSlabSchemePage {
     }
 
     if (await directAction.isVisible().catch(() => false)) {
-      await directAction.click({ force: true }).catch(() => {});
+      await directAction.scrollIntoViewIfNeeded().catch(() => {});
+      // Real click required - force clicks don't trigger this app's
+      // custom click handlers on these row-action icons (confirmed live).
+      await directAction.click().catch(() => {});
       await this.page.waitForTimeout(1500);
       return true;
     }
@@ -460,88 +481,85 @@ export class DriverKpiSlabSchemePage {
     return false;
   }
 
-  async verifyViewFlow() {
-    const opened = await this.openRowAction(/View|Details/i);
-    if (!opened) {
-      console.log(`INFO: No ${this.schemeName} row view action available.`);
-      await this.verifyPageLoaded();
-      return;
-    }
+  /**
+   * This UI has no dedicated "View" action (confirmed live - only Edit
+   * and Delete icons exist per row), so Edit doubles as the detail view:
+   * open it, confirm the dialog shows this record's real weight, then
+   * cancel without saving anything.
+   * @param {string | number} weight
+   */
+  async verifyViewFlow(weight) {
+    const row = this.findRowByWeight(weight).first();
+    const opened = await this.openRowAction(/Edit|Update/i, row);
+    expect(opened, `${this.schemeName} slab with weight ${weight} should expose an Edit/view action.`).toBe(true);
 
     const dialog = this.activeDialog();
-    if (await dialog.isVisible().catch(() => false)) {
-      await expect(dialog).toContainText(/KPI|Scheme|Slab|Min|Max|Weight|View|Details/i, { timeout: 10000 });
-      await this.closeDialog();
-    } else {
-      await expect(this.page.locator('body')).toContainText(/Driver\s*KPI|KPI\s*Slabs|View|Details|Min|Max|Weight/i);
-    }
+    await expect(dialog, `${this.schemeName} detail dialog should open.`).toBeVisible({ timeout: 10000 });
+
+    // The weight lives in an <input> field's value, not in the dialog's
+    // rendered text content, so it has to be checked via toHaveValue.
+    const weightInput = dialog.locator(
+      'input[formcontrolname*="weight" i], input[placeholder*="Weight" i], mat-form-field:has-text("Weight") input'
+    ).first();
+    await expect(weightInput, `${this.schemeName} detail dialog should show weight ${weight}.`).toHaveValue(String(weight), { timeout: 10000 });
+    await this.closeDialog();
 
     await this.verifyPageLoaded();
   }
 
-  async verifyEditFlow() {
-    const opened = await this.openRowAction(/Edit|Update/i);
-    if (!opened) {
-      console.log(`INFO: No ${this.schemeName} row edit action available.`);
-      await this.verifyPageLoaded();
-      return;
-    }
+  /**
+   * @param {string | number} currentWeight the weight identifying the record to edit
+   * @param {string | number} newWeight the weight to change it to
+   */
+  async verifyEditFlow(currentWeight, newWeight) {
+    const row = this.findRowByWeight(currentWeight).first();
+    const opened = await this.openRowAction(/Edit|Update/i, row);
+    expect(opened, `${this.schemeName} slab with weight ${currentWeight} should expose an Edit action.`).toBe(true);
 
     const dialog = this.activeDialog();
-    if (await dialog.isVisible().catch(() => false)) {
-      await this.fillFirstVisible(dialog, [
-        'input[formcontrolname*="weight" i]',
-        'input[placeholder*="Weight" i]',
-        'mat-form-field:has-text("Weight") input',
-        'input[type="number"]',
-      ], '6');
+    await expect(dialog, `${this.schemeName} edit dialog should open.`).toBeVisible({ timeout: 10000 });
 
-      const updateButton = await this.enabledButton(dialog, /Update|Save|Submit/i);
-      if (!(await updateButton.isVisible({ timeout: 10000 }).catch(() => false))) {
-        console.log(`INFO: ${this.schemeName} edit dialog opened, but no enabled update action was visible.`);
-        await this.closeDialog();
-        await this.verifyPageLoaded();
-        return;
-      }
-      await this.closeDialog();
-    } else {
-      const editTextVisible = await this.page
-        .locator('body')
-        .filter({ hasText: /Driver\s*KPI|KPI\s*Slabs|Edit|Update/i })
-        .first()
-        .isVisible({ timeout: 10000 })
-        .catch(() => false);
-      if (!editTextVisible) {
-        console.log(`INFO: ${this.schemeName} edit action did not expose a standard edit surface; page stayed stable.`);
-      }
-    }
+    await this.fillFirstVisible(dialog, [
+      'input[formcontrolname*="weight" i]',
+      'input[placeholder*="Weight" i]',
+      'mat-form-field:has-text("Weight") input',
+      'input[type="number"]',
+    ], String(newWeight));
 
-    await this.verifyPageLoaded();
+    // The submit button here is literally labeled "Edit" (not "Update"),
+    // same as Create is labeled "Create" rather than a generic "Save".
+    const updateButton = await this.enabledButton(dialog, /^(Edit|Update|Save|Submit)$/i);
+    await expect(updateButton, `${this.schemeName} edit submit button should be visible.`).toBeVisible({ timeout: 10000 });
+    await expect(updateButton, `${this.schemeName} edit submit button should be enabled.`).toBeEnabled({ timeout: 10000 });
+    await updateButton.click();
+    await this.page.waitForTimeout(2000);
+    await this.confirmSuccessIfShown();
+
+    await expect(
+      this.findRowByWeight(newWeight).first(),
+      `The edited ${this.schemeName} slab should show the updated weight ${newWeight}.`
+    ).toBeVisible({ timeout: 10000 });
   }
 
-  async verifyDeleteConfirmation() {
-    const opened = await this.openRowAction(/Delete|Remove/i);
-    if (!opened) {
-      console.log(`INFO: No ${this.schemeName} row delete action available.`);
-      await this.verifyPageLoaded();
-      return;
-    }
+  /** @param {string | number} weight identifies the record to delete */
+  async verifyDeleteConfirmation(weight) {
+    const row = this.findRowByWeight(weight).first();
+    const opened = await this.openRowAction(/Delete|Remove/i, row);
+    expect(opened, `${this.schemeName} slab with weight ${weight} should expose a Delete action.`).toBe(true);
 
     const confirmation = this.activeDialog();
-    if (await confirmation.isVisible().catch(() => false)) {
-      const cancelButton = this.page
-        .locator('.swal2-cancel, button:has-text("Cancel"), button:has-text("No"), button:has-text("Close")')
-        .filter({ visible: true })
-        .first();
-      if (await cancelButton.isVisible().catch(() => false)) {
-        await cancelButton.click({ force: true }).catch(() => {});
-      } else {
-        await this.page.keyboard.press('Escape').catch(() => {});
-      }
-      await this.page.waitForTimeout(1000);
-    }
+    await expect(confirmation, `${this.schemeName} delete confirmation should open.`).toBeVisible({ timeout: 10000 });
 
-    await this.verifyPageLoaded();
+    const confirmButton = await this.enabledButton(confirmation, /^(Delete|Remove|Yes|Confirm)$/i);
+    await expect(confirmButton, `${this.schemeName} delete confirm button should be visible.`).toBeVisible({ timeout: 10000 });
+    await confirmButton.click();
+    await this.page.waitForTimeout(1500);
+    await this.confirmSuccessIfShown();
+
+    await expect(
+      this.findRowByWeight(weight),
+      `The ${this.schemeName} slab with weight ${weight} should no longer appear after deleting it.`
+    ).toHaveCount(0, { timeout: 10000 });
   }
 
   async confirmSuccessIfShown() {

@@ -8,6 +8,9 @@ import { test } from '@playwright/test';
 import { DriverKpiSlabSchemePage } from './driver-kpi-slab-helper.js';
 
 const SCHEME_NAME = 'Speed of Delivery';
+const RUN_STAMP = Date.now();
+const CREATE_WEIGHT = 1000 + (RUN_STAMP % 8000);
+const EDIT_WEIGHT = CREATE_WEIGHT + 1;
 
 class SpeedofDeliverySlabScheme extends DriverKpiSlabSchemePage {
   /** @param {import('@playwright/test').Page} page */
@@ -33,20 +36,20 @@ test.describe.serial('Driver KPI Slabs - Speed of Delivery Slab Scheme', () => {
     await slabScheme.verifyFiltersSearchAndPagination();
   });
 
-  test('SOD-03: Speed of Delivery create slab flow opens and validates/submits safely', async () => {
+  test('SOD-03: Create a slab and confirm it appears in the table', async () => {
     test.setTimeout(240000);
-    await slabScheme.verifyCreateSlabFlow();
+    await slabScheme.verifyCreateSlabFlow(CREATE_WEIGHT);
   });
 
-  test('SOD-04: Speed of Delivery view slab action opens expected details', async () => {
-    await slabScheme.verifyViewFlow();
+  test('SOD-04: View the created slab\'s details', async () => {
+    await slabScheme.verifyViewFlow(CREATE_WEIGHT);
   });
 
-  test('SOD-05: Speed of Delivery edit slab action opens expected form', async () => {
-    await slabScheme.verifyEditFlow();
+  test('SOD-05: Edit the created slab and confirm the update is saved', async () => {
+    await slabScheme.verifyEditFlow(CREATE_WEIGHT, EDIT_WEIGHT);
   });
 
-  test('SOD-06: Speed of Delivery delete slab action opens confirmation and cancels safely', async () => {
-    await slabScheme.verifyDeleteConfirmation();
+  test('SOD-06: Delete the edited slab and confirm it is removed', async () => {
+    await slabScheme.verifyDeleteConfirmation(EDIT_WEIGHT);
   });
 });

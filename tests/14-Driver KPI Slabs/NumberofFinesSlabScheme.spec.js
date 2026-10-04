@@ -8,6 +8,9 @@ import { test } from '@playwright/test';
 import { DriverKpiSlabSchemePage } from './driver-kpi-slab-helper.js';
 
 const SCHEME_NAME = 'Number of Fines';
+const RUN_STAMP = Date.now();
+const CREATE_WEIGHT = 1000 + (RUN_STAMP % 8000);
+const EDIT_WEIGHT = CREATE_WEIGHT + 1;
 
 class NumberofFinesSlabScheme extends DriverKpiSlabSchemePage {
   /** @param {import('@playwright/test').Page} page */
@@ -33,20 +36,20 @@ test.describe.serial('Driver KPI Slabs - Number of Fines Slab Scheme', () => {
     await slabScheme.verifyFiltersSearchAndPagination();
   });
 
-  test('NOF-03: Number of Fines create slab flow opens and validates/submits safely', async () => {
+  test('NOF-03: Create a slab and confirm it appears in the table', async () => {
     test.setTimeout(240000);
-    await slabScheme.verifyCreateSlabFlow();
+    await slabScheme.verifyCreateSlabFlow(CREATE_WEIGHT);
   });
 
-  test('NOF-04: Number of Fines view slab action opens expected details', async () => {
-    await slabScheme.verifyViewFlow();
+  test('NOF-04: View the created slab\'s details', async () => {
+    await slabScheme.verifyViewFlow(CREATE_WEIGHT);
   });
 
-  test('NOF-05: Number of Fines edit slab action opens expected form', async () => {
-    await slabScheme.verifyEditFlow();
+  test('NOF-05: Edit the created slab and confirm the update is saved', async () => {
+    await slabScheme.verifyEditFlow(CREATE_WEIGHT, EDIT_WEIGHT);
   });
 
-  test('NOF-06: Number of Fines delete slab action opens confirmation and cancels safely', async () => {
-    await slabScheme.verifyDeleteConfirmation();
+  test('NOF-06: Delete the edited slab and confirm it is removed', async () => {
+    await slabScheme.verifyDeleteConfirmation(EDIT_WEIGHT);
   });
 });
