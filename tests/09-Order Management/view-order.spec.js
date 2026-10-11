@@ -1,708 +1,298 @@
 // @ts-check
 // ============================================================
-// TMDone Admin Console - Order Management Module Tests
-// URL: #/home/order-management (or similar containing 'order')
-// Tests: OM-01 → OM-10 (each test is fully independent)
-// v1 - Fully stable: no hard assertions that can cascade-fail,
-//      consistent selectors, graceful skip when data is 1 page
+// TMDone Admin Console - Order Management
+// URL: #/home/order-management
+// VIEW-ONLY: the page lists orders for a date range with a free-text
+// search (order id / branch name) and pagination. Rows have no actions.
+// These tests never change, cancel, refund or reassign any order.
 // ============================================================
 
 import { test, expect } from '@playwright/test';
 import { loginToApp, CREDENTIALS } from '../helpers/loginHelper.js';
 
-// If the actual URL is different, this can be updated. Commonly #/home/order-management or #/home/orders
-const MODULE_URL = `${CREDENTIALS.baseUrl}/#/home/order-management`;
+const ORDERS_URL = `${CREDENTIALS.baseUrl}/#/home/order-management`;
+const TEST_STORE = 'Food House';
+const SPINNERS = ['.ngx-spinner-overlay', 'app-page-loader'];
+const EXPECTED_HEADERS = ['Branch Name', 'Service Type', 'Order ID', 'Date/Time', 'Payment Type', 'Currency', 'Delivery Fee', 'Amount', 'Status'];
+const COL = { branch: 0, service: 1, orderId: 2, date: 3, currency: 5, fee: 6, amount: 7, status: 8 };
+const KNOWN_STATUSES = ['PENDING', 'ACCEPTED', 'PREPARING', 'READY', 'ENROUTE', 'PICKED', 'DELIVERED', 'COMPLETE', 'CANCELLED', 'REJECTED', 'UNSUCCESSFUL'];
 
-// ============================================================
-// MODULE-LEVEL HELPERS
-// ============================================================
-
-/** @param {import('@playwright/test').Page} page */
-async function goToModulePage(page) {
-  await loginToApp(page);
-  
-  // Try direct navigation first
-  console.log(`ℹ️ Navigating to: ${MODULE_URL}`);
-  await page.goto(MODULE_URL);
-  await page.waitForTimeout(4000);
-  
-  // If we get a 404 or it redirects, try navigating via sidebar
-  const currentUrl = page.url();
-  if (!currentUrl.includes('order')) {
-    console.log(`⚠️ URL "${currentUrl}" does not contain "order". Trying sidebar...`);
-    const sidebar = page.locator('.sidebar');
-    await sidebar.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
-    
-    const ordersLink = sidebar.locator('a:has-text("Order Management")').first();
-    if (await ordersLink.isVisible().catch(() => false)) {
-      await ordersLink.scrollIntoViewIfNeeded();
-      await ordersLink.click({ force: true });
-      await page.waitForTimeout(5000);
-    } else {
-      console.log('❌ Sidebar link "Order Management" not found.');
-    }
-  }
-  
-  await page.waitForLoadState('domcontentloaded').catch(() => {});
-  console.log('ℹ️ Page loaded:', page.url());
-}
-
-/** @param {import('@playwright/test').Page} page */
-async function clickSearchBtn(page) {
-  const selectors = [
-    'button.search-btn',
-    'button:has(mat-icon:text("search"))',
-    'button:has(mat-icon:has-text("search"))',
-    'button[aria-label*="search" i]',
-    'button.mat-primary:has(mat-icon)',
-    'button mat-icon:has-text("search")',
-    '.search-container button',
-    'button:has(.fa-search)'
-  ];
-  for (const sel of selectors) {
-    const btn = page.locator(sel).first();
-    if (
-      await btn.isVisible().catch(() => false) &&
-      await btn.isEnabled().catch(() => false)
-    ) {
-      await btn.click({ force: true });
-      await page.waitForTimeout(4000); // Wait a bit longer for search results
-      console.log(`✅ Search clicked via: "${sel}"`);
-      return true;
-    }
-  }
-  console.log('⚠️ Search button not found.');
-  return false;
-}
-
-/** @param {import('@playwright/test').Page} page */
-function getOrderSearchInput(page) {
-  return page.locator(
-    'input[placeholder*="Search" i], ' +
-    'input[placeholder*="Order" i], ' +
-    'input[formcontrolname*="search" i], ' +
-    'input[aria-label*="search" i]'
-  ).or(page.getByRole('textbox', { name: /search/i })).first();
-}
-
-/** @param {import('@playwright/test').Page} page */
-async function waitForRows(page) {
-  const rows = page.locator('tbody tr, mat-row');
-  for (let i = 0; i < 20; i += 1) {
-    const rowCount = await rows.count();
-    if (rowCount > 0) return rowCount;
-    await page.waitForTimeout(500);
-  }
-  return rows.count();
-}
-
-/** @param {import('@playwright/test').Page} page */
-async function getFirstOrderId(page) {
-  await waitForRows(page);
-  const cells = page.locator('tbody tr, mat-row').first().locator('td, mat-cell');
-  const count = await cells.count().catch(() => 0);
-  for (let index = 0; index < count; index += 1) {
-    const text = ((await cells.nth(index).textContent().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-    if (/[A-Z]*\d{4,}|#?\d{4,}/i.test(text)) return text;
-  }
-  return '';
-}
-
-/** @param {import('@playwright/test').Page} page */
-async function clickClearBtn(page) {
-  const selectors = [
-    'button.close-btn',
-    'button:has(mat-icon:text("close"))',
-    'button:has(mat-icon:has-text("close"))',
-    'button[aria-label*="clear" i]',
-    'button[aria-label*="reset" i]',
-  ];
-  for (const sel of selectors) {
-    const btn = page.locator(sel).first();
-    if (await btn.isVisible().catch(() => false)) {
-      await btn.click({ force: true });
-      await page.waitForTimeout(2500);
-      console.log(`✅ Clear clicked via: "${sel}"`);
-      return true;
-    }
-  }
-  console.log('⚠️ Clear button not found.');
-  return false;
-}
-
-/**
- * Select mat-select option by dropdown index and option index.
- * @param {import('@playwright/test').Page} page
- * @param {number} dropdownIndex
- * @param {string} label
- * @param {number} optionIndex
- */
-async function selectByIndex(page, dropdownIndex, label, optionIndex = 1) {
-  const dropdown = page.locator('mat-select').nth(dropdownIndex);
-  const isVisible = await dropdown.isVisible().catch(() => false);
-  const isEnabled = await dropdown.isEnabled().catch(() => false);
-  console.log(`ℹ️ ${label} (index ${dropdownIndex}) → visible:${isVisible} enabled:${isEnabled}`);
-
-  if (!isVisible || !isEnabled) {
-    console.log(`⚠️ ${label} not interactable.`);
-    return false;
-  }
-
-  await dropdown.click({ force: true });
-  await page.waitForTimeout(1500);
-  await page.locator('mat-option').first().waitFor({ state: 'visible', timeout: 8000 }).catch(() => {});
-
-  const options = page.locator('mat-option');
-  const count = await options.count();
-  console.log(`ℹ️ ${label}: ${count} option(s) found.`);
-
-  if (count > optionIndex) {
-    const txt = (await options.nth(optionIndex).textContent())?.trim() || '';
-    await options.nth(optionIndex).click({ force: true });
-    await page.waitForTimeout(1000);
-    console.log(`✅ ${label}: selected [${optionIndex}] = "${txt}"`);
-    if (await page.locator('mat-option').first().isVisible().catch(() => false)) {
-      await page.keyboard.press('Escape');
-      await page.waitForTimeout(500);
-    }
-    return true;
-  }
-
-  await page.keyboard.press('Escape');
-  console.log(`⚠️ ${label}: index ${optionIndex} not available (only ${count} options).`);
-  return false;
-}
-
-/** @param {import('@playwright/test').Page} page */
-async function getActivePage(page) {
-  const selectors = [
-    '.ngx-pagination li.current',
-    '.ngx-pagination .current',
-    'li.page-item.active',
-    '.pagination .active',
-  ];
-  for (const sel of selectors) {
-    const el = page.locator(sel).first();
-    if (await el.isVisible().catch(() => false)) {
-      const txt = (await el.textContent().catch(() => ''))?.trim() || '';
-      if (txt) return txt;
-    }
-  }
-  return '';
-}
-
-/**
- * @param {import('@playwright/test').Page} page
- */
-async function getPagination(page) {
-  const nextLi = page.locator(
-    '.ngx-pagination li.pagination-next, li.pagination-next, li.page-item'
-  ).filter({ hasText: /next|»/i }).first();
-
-  const prevLi = page.locator(
-    '.ngx-pagination li.pagination-previous, li.pagination-previous, li.page-item'
-  ).filter({ hasText: /prev|«/i }).first();
-
-  const nextVisible  = await nextLi.isVisible().catch(() => false);
-  const prevVisible  = await prevLi.isVisible().catch(() => false);
-  const nextDisabled = nextVisible
-    ? await nextLi.evaluate(el => el.classList.contains('disabled') || !el.querySelector('a')).catch(() => true)
-    : true;
-  const prevDisabled = prevVisible
-    ? await prevLi.evaluate(el => el.classList.contains('disabled') || !el.querySelector('a')).catch(() => true)
-    : true;
-
-  console.log(`ℹ️ Pagination → Next(vis:${nextVisible} dis:${nextDisabled}) Prev(vis:${prevVisible} dis:${prevDisabled})`);
-  return { nextLi, prevLi, nextVisible, prevVisible, nextDisabled, prevDisabled };
-}
-
-/** @param {import('@playwright/test').Locator} li */
-async function clickPaginationLi(li) {
-  const a = li.locator('a').first();
-  if (await a.count() > 0) await a.click({ force: true, noWaitAfter: true });
-  else await li.click({ force: true, noWaitAfter: true });
-}
-
-// ============================================================
-// =================== TEST SUITE =============================
-// ============================================================
-test.describe('Order Management Module - Feature Tests', () => {
-
-  // ----------------------------------------------------------
-  // OM-01: Page Load — Table renders correctly
-  // ----------------------------------------------------------
-  test('OM-01: Order Management page loads and data table renders correctly', async ({ page }) => {
-    await goToModulePage(page);
-
-    await expect(page).toHaveURL(/order/);
-
-    // Wait for table shell
-    const table = page.locator('.table-responsive, mat-table, table');
-    const tableVisible = await table.first().isVisible({ timeout: 30000 }).catch(() => false);
-    if (!tableVisible) {
-      const bodyText = await page.locator('body').innerText().catch(() => '');
-      expect(bodyText.length, 'Order Management page should render content when the table is absent.').toBeGreaterThan(100);
-      console.log('INFO: Order Management table shell is not visible in the current environment.');
-      return;
-    }
-
-    // Poll for rows
-    let rowCount = 0;
-    for (let i = 0; i < 15; i++) {
-      rowCount = await page.locator('tbody tr, mat-row').count();
-      if (rowCount > 0) break;
-      await page.waitForTimeout(1000);
-    }
-    console.log(`ℹ️ Rows: ${rowCount}`);
-    if (rowCount === 0) {
-      console.log('⚠️ OM-01: Table visible but 0 rows — may be empty environment or slow load.');
-      // We don't fail strictly on 0 rows to allow for empty environments
-    } else {
-      console.log(`✅ OM-01: Found ${rowCount} rows.`);
-    }
-
-    // Column headers
-    const headerCount = await page.locator('thead th, th, mat-header-cell').count();
-    console.log(`ℹ️ Columns: ${headerCount}`);
-    if (headerCount > 0) {
-      expect(headerCount).toBeGreaterThan(0);
-    } else {
-      console.log('⚠️ OM-01: No column headers detected.');
-    }
-
-    // Total results label
-    const pageText = await page.locator('body').innerText().catch(() => '');
-    const totalMatch = pageText.match(/Total\s+\d+\s+results\s+found/i);
-    if (totalMatch) {
-      console.log(`ℹ️ Total: "${totalMatch[0]}"`);
-    }
-
-    console.log('✅ OM-01 PASSED: Order Management page data table renders correctly.');
+test.describe('09-Order Management - Orders list (view-only)', () => {
+  test.beforeEach(async ({ page }) => {
+    test.setTimeout(240000);
+    await goToOrdersPage(page);
   });
 
-  // ----------------------------------------------------------
-  // OM-02: Status Dropdown — Filter by Status
-  // ----------------------------------------------------------
-  test('OM-02: Status dropdown selects a status and filters data', async ({ page }) => {
-    await goToModulePage(page);
+  test('OM-01: Order Management loads the last 30 days of orders with all columns', async ({ page }) => {
+    await expect(page.getByRole('heading', { name: 'Order Management' })).toBeVisible();
+    await expect(searchInput(page)).toBeVisible();
+    await expect(page.locator('button[mattooltip="Search"]')).toBeVisible();
+    const headers = (await page.locator('thead th').allInnerTexts()).map((h) => h.trim());
+    expect(headers).toEqual(EXPECTED_HEADERS);
 
-    const dropdownCount = await page.locator('mat-select').count();
-    if (dropdownCount < 1) {
-      console.log('⚠️ OM-02: Status dropdown not visible — passes gracefully.');
-      console.log('✅ OM-02 PASSED (graceful).');
-      return;
-    }
+    // Default range: 30 days ago .. yesterday.
+    await expect(startDate(page)).toHaveValue(formatDate(daysAgo(30)));
+    await expect(endDate(page)).toHaveValue(formatDate(daysAgo(1)));
 
-    const selected = await selectByIndex(page, 0, 'Status', 1);
-
-    if (selected) {
-      await clickSearchBtn(page);
-
-      const table = page.locator('.table-responsive, mat-table, table');
-      await expect(table.first()).toBeVisible({ timeout: 15000 });
-      const rowCount = await page.locator('tbody tr, mat-row').count();
-      console.log(`ℹ️ Rows after status filter: ${rowCount}`);
-    } else {
-      console.log('⚠️ OM-02: Could not select status option.');
-    }
-
-    console.log('✅ OM-02 PASSED: Status dropdown verified.');
+    const total = await getTotalResults(page);
+    expect(total, 'Orders should exist in the last 30 days.').toBeGreaterThan(0);
+    await expect(page.locator('tbody tr')).toHaveCount(Math.min(total, 50));
+    await expectRowsWithinRange(page, daysAgo(30), daysAgo(1));
   });
 
-  // ----------------------------------------------------------
-  // OM-03: Secondary Dropdown — Filter by Zone or Store
-  // ----------------------------------------------------------
-  test('OM-03: Secondary dropdown selects an option and filters data', async ({ page }) => {
-    await goToModulePage(page);
-
-    const dropdownCount = await page.locator('mat-select').count();
-    if (dropdownCount < 2) {
-      console.log('⚠️ OM-03: Secondary dropdown not visible — passes gracefully.');
-      console.log('✅ OM-03 PASSED (graceful).');
-      return;
+  test('OM-02: Order rows show valid ids, service types, money values and statuses', async ({ page }) => {
+    const rows = await readRows(page);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row[COL.branch].length, 'Branch name should be filled.').toBeGreaterThan(0);
+      expect(row[COL.orderId]).toMatch(/^[A-Z0-9]{6}$/);
+      expect(['Express', 'Market Place', 'Scheduled', 'Pickup']).toContain(row[COL.service]);
+      expect(row[COL.currency]).toBe('OMR');
+      expect(row[COL.fee]).toMatch(/^\d+\.\d{3}$/);
+      expect(row[COL.amount]).toMatch(/^\d+\.\d{3}$/);
+      expect(KNOWN_STATUSES, `Unexpected status "${row[COL.status]}" for ${row[COL.orderId]}.`).toContain(row[COL.status]);
     }
-
-    const selected = await selectByIndex(page, 1, 'Secondary Filter', 1);
-
-    if (selected) {
-      await clickSearchBtn(page);
-      const table = page.locator('.table-responsive, mat-table, table');
-      const tableVisible = await table.first().isVisible({ timeout: 15000 }).catch(() => false);
-      if (tableVisible) {
-        const rowCount = await page.locator('tbody tr, mat-row').count();
-        console.log(`ℹ️ Rows after secondary filter: ${rowCount}`);
-      } else {
-        console.log('ℹ️ OM-03: No data for selected filter — valid.');
-      }
-    } else {
-      console.log('⚠️ OM-03: Could not select secondary filter option.');
-    }
-
-    console.log('✅ OM-03 PASSED: Secondary dropdown verified.');
+    const ids = rows.map((row) => row[COL.orderId]);
+    expect(new Set(ids).size, 'Order ids should be unique on the page.').toBe(ids.length);
+    // Newest orders first.
+    const times = rows.map((row) => parseRowDate(row[COL.date]).getTime());
+    expect([...times].sort((a, b) => b - a)).toEqual(times);
   });
 
-  // ----------------------------------------------------------
-  // OM-04: Date Range Filter
-  // ----------------------------------------------------------
-  test('OM-04: Date Range filter selects start and end dates', async ({ page }) => {
-    await goToModulePage(page);
-
-    // Look for date picker toggle or input
-    const datePicker = page.locator(
-      'mat-datepicker-toggle button, ' +
-      'input[placeholder*="Date" i], ' +
-      'input[placeholder*="Range" i], ' +
-      'input[formcontrolname*="date" i]'
-    ).first();
-    
-    const isVisible = await datePicker.isVisible().catch(() => false);
-    
-    if (!isVisible) {
-      console.log('⚠️ OM-04: Date picker not visible — passes gracefully.');
-      console.log('✅ OM-04 PASSED (graceful).');
-      return;
-    }
-
-    await datePicker.click({ force: true });
-    await page.waitForTimeout(2000);
-    
-    // Attempt to pick dates if calendar opens
-    const calendar = page.locator('mat-calendar, .mat-datepicker-content').first();
-    const calendarVisible = await calendar.isVisible().catch(() => false);
-    console.log(`ℹ️ Calendar visible: ${calendarVisible}`);
-
-    if (calendarVisible) {
-      const days = calendar.locator('.mat-calendar-body-cell:not(.mat-calendar-body-disabled)');
-      const count = await days.count();
-      console.log(`ℹ️ Selectable days: ${count}`);
-
-      if (count >= 2) {
-        // Pick two different days
-        await days.nth(0).click({ force: true });
-        await page.waitForTimeout(800);
-        await days.nth(Math.min(5, count - 1)).click({ force: true });
-        await page.waitForTimeout(1000);
-      }
-      
-      // Close calendar if still open
-      if (await calendar.isVisible().catch(() => false)) {
-        await page.keyboard.press('Escape');
-        await page.waitForTimeout(500);
-      }
-    }
-
-    await clickSearchBtn(page);
-    
-    const table = page.locator('.table-responsive, mat-table, table');
-    await table.first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
-    
-    const rowCount = await page.locator('tbody tr, mat-row').count();
-    console.log(`ℹ️ Rows after date filter: ${rowCount}`);
-    
-    console.log('✅ OM-04 PASSED: Date Range filter verified.');
+  test('OM-03: Search by an order id returns exactly that order', async ({ page }) => {
+    const rows = await readRows(page);
+    const target = rows[Math.min(3, rows.length - 1)];
+    await search(page, target[COL.orderId]);
+    await expect.poll(async () => (await readRows(page)).map((row) => row[COL.orderId]), {
+      message: `Search should return only order ${target[COL.orderId]}.`,
+      timeout: 45000,
+    }).toEqual([target[COL.orderId]]);
+    expect(await readRows(page)).toEqual([target]);
+    expect(await getTotalResults(page)).toBe(1);
   });
 
-  // ----------------------------------------------------------
-  // OM-05: Search Input — Type and Search
-  // ----------------------------------------------------------
-  test('OM-05: Search input works correctly', async ({ page }) => {
-    await goToModulePage(page);
-
-    const searchInput = getOrderSearchInput(page);
-    
-    const isVisible = await searchInput.isVisible().catch(() => false);
-
-    if (isVisible) {
-      const firstOrderId = await getFirstOrderId(page);
-      const testSearch = firstOrderId || '12345';
-      console.log(`ℹ️ Filling search input with: "${testSearch}"`);
-      await searchInput.fill(testSearch);
-      await page.waitForTimeout(1000);
-      
-      const clicked = await clickSearchBtn(page);
-      
-      if (clicked) {
-        const table = page.locator('.table-responsive, mat-table, table');
-        await table.first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
-        
-        const rowCount = await page.locator('tbody tr, mat-row').count();
-        if (firstOrderId && rowCount > 0) {
-          await expect(page.locator('tbody tr, mat-row').first()).toContainText(firstOrderId, { timeout: 15000 });
-        }
-        console.log(`ℹ️ Rows after text search: ${rowCount}`);
-      }
-    } else {
-      console.log('⚠️ OM-05: Search input not visible — passes gracefully.');
-    }
-
-    console.log('✅ OM-05 PASSED: Search input verified.');
+  test('OM-04: Search by branch name returns only Food House orders', async ({ page }) => {
+    await search(page, TEST_STORE);
+    await expect.poll(async () => {
+      const branches = (await readRows(page)).map((row) => row[COL.branch]);
+      return branches.length > 0 && branches.every((branch) => branch.includes(TEST_STORE));
+    }, { message: 'Every result should be a Food House order.', timeout: 45000 }).toBe(true);
+    const total = await getTotalResults(page);
+    await expect(page.locator('tbody tr')).toHaveCount(Math.min(total, 50));
   });
 
-  // ----------------------------------------------------------
-  // OM-06: Clear Icon — Resets all filters and reloads data
-  // ----------------------------------------------------------
-  test('OM-06: Clear icon resets all filters and reloads data', async ({ page }) => {
-    await goToModulePage(page);
+  test('OM-05: A search with no match shows zero results and clearing the search restores the list', async ({ page }) => {
+    const total = await getTotalResults(page);
+    await search(page, 'ZZNOMATCH99');
+    await expect.poll(async () => getTotalResults(page), { timeout: 45000 }).toBe(0);
+    await expect(page.locator('tbody tr')).toHaveCount(0);
 
-    // Apply a dropdown filter first if available
-    const dropdownCount = await page.locator('mat-select').count();
-    if (dropdownCount > 0) {
-      await selectByIndex(page, 0, 'Status', 1);
-      await clickSearchBtn(page);
-    }
-
-    // Locate and click the clear icon
-    const clearBtn = page.locator(
-      'button.close-btn, ' +
-      'button:has(mat-icon:text("close")), ' +
-      'button:has(mat-icon:has-text("close")), ' +
-      'button[aria-label*="clear" i]'
-    ).first();
-
-    const isVisible = await clearBtn.isVisible().catch(() => false);
-    if (!isVisible) {
-      console.log('⚠️ OM-06: Clear icon not visible — passes gracefully.');
-      console.log('✅ OM-06 PASSED (graceful).');
-      return;
-    }
-
-    await clearBtn.click({ force: true });
-    await page.waitForTimeout(3000);
-
-    const table = page.locator('.table-responsive, mat-table, table');
-    await expect(table.first()).toBeVisible({ timeout: 15000 });
-
-    const rowCount = await page.locator('tbody tr, mat-row').count();
-    console.log(`ℹ️ Rows after clear: ${rowCount}`);
-
-    console.log('✅ OM-06 PASSED: Clear icon resets filters and reloads data.');
+    await search(page, '');
+    await expect.poll(async () => getTotalResults(page), {
+      message: 'Clearing the search should restore all orders in the range.',
+      timeout: 45000,
+    }).toBe(total);
+    await expect(page.locator('tbody tr')).toHaveCount(Math.min(total, 50));
   });
 
-  // ----------------------------------------------------------
-  // OM-07: Export/Download — Triggers file download
-  // ----------------------------------------------------------
-  test('OM-07: Export button triggers file download', async ({ page }) => {
-    await goToModulePage(page);
+  test('OM-06: Pagination next, previous and page-number navigation', async ({ page }) => {
+    const total = await getTotalResults(page);
+    test.skip(total <= 100, `Only ${total} orders in the default range; three pages are needed for this check.`);
+    const page1 = await readRows(page);
+    await expect(activePage(page)).toContainText('1');
 
-    const downloadBtn = page.locator(
-      'button.btn-download, ' +
-      'button:has(mat-icon:text("file_download")), ' +
-      'button:has(mat-icon:has-text("file_download")), ' +
-      'button:has(mat-icon:has-text("download")), ' +
-      'button[aria-label*="download" i], ' +
-      'button[aria-label*="export" i]'
-    ).first();
+    await clickWhenReady(page, page.locator('.ngx-pagination li.pagination-next a'));
+    await expect(activePage(page)).toContainText('2', { timeout: 30000 });
+    await expect.poll(async () => (await readRows(page))[0]?.[COL.orderId], { timeout: 45000 }).not.toBe(page1[0][COL.orderId]);
+    const page2 = await readRows(page);
+    const page1Ids = page1.map((row) => row[COL.orderId]);
+    expect(page2.filter((row) => page1Ids.includes(row[COL.orderId])), 'Page 2 should list different orders.').toEqual([]);
+    expect(parseRowDate(page2[0][COL.date]).getTime(), 'Page 2 continues the newest-first order.')
+      .toBeLessThanOrEqual(parseRowDate(page1[page1.length - 1][COL.date]).getTime());
 
-    await downloadBtn.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+    await clickWhenReady(page, page.locator('.ngx-pagination li.pagination-previous a'));
+    await expect(activePage(page)).toContainText('1', { timeout: 30000 });
+    await expect.poll(async () => (await readRows(page))[0]?.[COL.orderId], { timeout: 45000 }).toBe(page1[0][COL.orderId]);
 
-    const isVisible = await downloadBtn.isVisible().catch(() => false);
-    const isEnabled = await downloadBtn.isEnabled().catch(() => false);
-    console.log(`ℹ️ Download btn → visible:${isVisible} enabled:${isEnabled}`);
-
-    if (!isVisible) {
-      console.log('⚠️ OM-07: Download button not visible — passes gracefully.');
-      console.log('✅ OM-07 PASSED (graceful).');
-      return;
-    }
-
-    if (isEnabled) {
-      const dlPromise = page.waitForEvent('download', { timeout: 20000 }).catch(() => null);
-      await downloadBtn.click({ force: true });
-      const dl = await dlPromise;
-      if (dl) {
-        console.log(`✅ OM-07: Downloaded → "${dl.suggestedFilename()}"`);
-      } else {
-        console.log('ℹ️ OM-07: No download event (may open inline).');
-      }
-    } else {
-      console.log('⚠️ OM-07 INFO: Download icon disabled.');
-    }
-
-    console.log('✅ OM-07 PASSED: Export action attempted.');
+    await clickWhenReady(page, page.locator('.ngx-pagination li a').filter({ hasText: /^\s*page\s*3\s*$|^\s*3\s*$/ }).first());
+    await expect(activePage(page)).toContainText('3', { timeout: 30000 });
+    await expect(page.locator('tbody tr')).toHaveCount(Math.min(total - 100, 50), { timeout: 45000 });
+    expect(await getTotalResults(page)).toBe(total);
   });
 
-  // ----------------------------------------------------------
-  // OM-08: Pagination — Next button moves to next page
-  // ----------------------------------------------------------
-  test('OM-08: Pagination - Next button navigates to next page', async ({ page }) => {
-    await goToModulePage(page);
+  test('OM-07: Date range picker narrows the list to the chosen days', async ({ page }) => {
+    const fullTotal = await getTotalResults(page);
+    const from = daysAgo(20);
+    const to = daysAgo(10);
 
-    const { nextLi, nextVisible, nextDisabled } = await getPagination(page);
+    await clickWhenReady(page, page.locator('mat-datepicker-toggle button').first());
+    const calendar = page.locator('mat-calendar');
+    await expect(calendar).toBeVisible({ timeout: 15000 });
+    await pickCalendarDay(page, from);
+    await pickCalendarDay(page, to);
+    await expect(calendar).toBeHidden({ timeout: 15000 });
+    await expect(startDate(page)).toHaveValue(formatDate(from));
+    await expect(endDate(page)).toHaveValue(formatDate(to));
 
-    if (!nextVisible || nextDisabled) {
-      console.log('ℹ️ OM-08: Next disabled or hidden — single page. Passes gracefully.');
-      console.log('✅ OM-08 PASSED.');
-      return;
-    }
-
-    const pageBefore = await getActivePage(page);
-    console.log(`ℹ️ Before Next: "${pageBefore}"`);
-
-    await clickPaginationLi(nextLi);
-    await page.waitForTimeout(2500);
-
-    const pageAfter = await getActivePage(page);
-    console.log(`ℹ️ After Next: "${pageAfter}"`);
-
-    const table = page.locator('.table-responsive, mat-table, table');
-    await expect(table.first()).toBeVisible({ timeout: 15000 });
-
-    const rowCount = await page.locator('tbody tr, mat-row').count();
-    console.log(`ℹ️ Rows on page 2: ${rowCount}`);
-
-    if (pageBefore && pageAfter && pageBefore !== pageAfter) {
-      console.log(`✅ OM-08: "${pageBefore}" → "${pageAfter}"`);
-    }
-
-    console.log('✅ OM-08 PASSED: Next button pagination verified.');
+    await clickWhenReady(page, page.locator('button[mattooltip="Search"]'));
+    await waitForSpinners(page);
+    await expect.poll(async () => {
+      const dates = (await readRows(page)).map((row) => parseRowDate(row[COL.date]));
+      return dates.length > 0 && dates.every((d) => d >= startOfDay(from) && d <= endOfDay(to));
+    }, { message: 'Every order should fall inside the chosen range.', timeout: 60000 }).toBe(true);
+    const total = await getTotalResults(page);
+    expect(total, 'A 10-day window should hold fewer orders than the 30-day default.').toBeLessThan(fullTotal);
+    await expect(page.locator('tbody tr')).toHaveCount(Math.min(total, 50));
   });
-
-  // ----------------------------------------------------------
-  // OM-09: Pagination — Previous button returns to previous page
-  // ----------------------------------------------------------
-  test('OM-09: Pagination - Previous button returns to previous page', async ({ page }) => {
-    await goToModulePage(page);
-
-    const { nextLi, prevLi, nextVisible, nextDisabled } = await getPagination(page);
-
-    if (!nextVisible || nextDisabled) {
-      console.log('ℹ️ OM-09: Single page — Previous not testable. Passes gracefully.');
-      console.log('✅ OM-09 PASSED.');
-      return;
-    }
-
-    const page1 = await getActivePage(page);
-    
-    await clickPaginationLi(nextLi);
-    await page.waitForTimeout(2500);
-    
-    const { prevDisabled: pd2, prevVisible: pv2, prevLi: pl2 } = await getPagination(page);
-    if (pd2 || !pv2) {
-      console.log('ℹ️ OM-09: Prev disabled/hidden on page 2. Passes gracefully.');
-      console.log('✅ OM-09 PASSED.');
-      return;
-    }
-
-    await clickPaginationLi(pl2);
-    await page.waitForTimeout(2500);
-
-    const pageBack = await getActivePage(page);
-    
-    if (page1 && pageBack) {
-      if (pageBack === page1) {
-        console.log(`✅ OM-09: Page matched (${pageBack}).`);
-      } else {
-        console.log(`⚠️ OM-09: Page did not match. Expected ${page1}, got ${pageBack}. Proceeding gracefully.`);
-      }
-    }
-
-    console.log('✅ OM-09 PASSED: Previous button returned to page 1.');
-  });
-
-  // ----------------------------------------------------------
-  // OM-10: More Actions / View Order
-  // ----------------------------------------------------------
-  test('OM-10: More actions / View order button functions correctly', async ({ page }) => {
-    await goToModulePage(page);
-
-    const rows = page.locator('tbody tr, mat-row');
-    const rowCount = await waitForRows(page);
-
-    if (rowCount === 0) {
-      console.log('⚠️ OM-10: No rows available to test view action — passes gracefully.');
-      console.log('✅ OM-10 PASSED (graceful).');
-      return;
-    }
-
-    // Look for more vert, visibility icon, or view order link in the first row
-    const firstRow = rows.first();
-    const viewBtn = firstRow.locator(
-      'button:has(mat-icon:text("more_vert")), ' +
-      'button:has(mat-icon:text("more_horiz")), ' +
-      'button:has(mat-icon:text("visibility")), ' +
-      'button:has(img[alt*="visibility" i]), ' +
-      'button[mattooltip="View Order" i], ' +
-      'a.view-btn, ' +
-      'button:has-text("View")'
-    ).first();
-
-    const isVisible = await viewBtn.isVisible().catch(() => false);
-    
-    if (false && !isVisible) {
-      console.log('⚠️ OM-10: View Order button not visible on the first row — passes gracefully.');
-      console.log('✅ OM-10 PASSED (graceful).');
-      return;
-    }
-
-    if (isVisible) {
-      await viewBtn.click({ force: true, noWaitAfter: true });
-    } else {
-      console.log('OM-10: Dedicated view button not visible, opening first order row.');
-      await firstRow.click({ force: true, noWaitAfter: true });
-    }
-    await page.waitForTimeout(2000);
-
-    // Check if URL changed or a modal opened
-    const modalVisible = await page.locator('mat-dialog-container, .modal-dialog, [role="dialog"]').first().isVisible().catch(() => false);
-    const detailsVisible = await page.locator('app-view-order, app-order-details, mat-tab-group, [role="tablist"]').first().isVisible().catch(() => false);
-    console.log(`ℹ️ Did a modal open? ${modalVisible}`);
-    
-    expect(modalVisible || detailsVisible || page.url().includes('order')).toBe(true);
-
-    if (modalVisible || detailsVisible) {
-      await page.keyboard.press('Escape');
-    }
-
-    console.log('✅ OM-10 PASSED: View Order action completed successfully.');
-  });
-
-  // ----------------------------------------------------------
-  // OM-11: Search by first visible Order ID
-  // ----------------------------------------------------------
-  test('OM-11: Search by first visible Order ID returns matching order', async ({ page }) => {
-    await goToModulePage(page);
-
-    const firstOrderId = await getFirstOrderId(page);
-    if (!firstOrderId) {
-      test.info().annotations.push({
-        type: 'info',
-        description: 'First visible order row did not expose a searchable order id in this environment.',
-      });
-      const tableVisible = await page.locator('.table-responsive, mat-table, table').first().isVisible({ timeout: 15000 }).catch(() => false);
-      if (!tableVisible) {
-        const bodyText = await page.locator('body').innerText().catch(() => '');
-        expect(bodyText.length, 'Order Management page should render content when there are no searchable rows.').toBeGreaterThan(100);
-      }
-      return;
-    }
-
-    const searchInput = getOrderSearchInput(page);
-    await expect(searchInput, 'Order search input should be visible.').toBeVisible({ timeout: 15000 });
-    await searchInput.fill(firstOrderId);
-    await clickSearchBtn(page);
-
-    const rowCount = await waitForRows(page);
-    if (rowCount === 0) {
-      test.info().annotations.push({
-        type: 'info',
-        description: `Searching for order id "${firstOrderId}" returned no visible rows in this environment.`,
-      });
-      console.log(`OM-11 PASSED (graceful): Search for Order ID "${firstOrderId}" returned no visible rows.`);
-      return;
-    }
-
-    const matchingRow = page.locator('tbody tr, mat-row').filter({ hasText: firstOrderId }).first();
-    if (!(await matchingRow.isVisible({ timeout: 15000 }).catch(() => false))) {
-      test.info().annotations.push({
-        type: 'info',
-        description: `Order search completed, but the live grid did not expose "${firstOrderId}" in the visible rows.`,
-      });
-      console.log(`OM-11 PASSED (graceful): Search completed without a visible exact match for "${firstOrderId}".`);
-      return;
-    }
-
-    await expect(matchingRow).toContainText(firstOrderId);
-    console.log(`OM-11 PASSED: Search found Order ID "${firstOrderId}".`);
-  });
-
 });
+
+// ============================================================
+// Helpers
+// ============================================================
+
+/** @param {import('@playwright/test').Page} page */
+async function goToOrdersPage(page) {
+  await loginToApp(page);
+  await page.goto(ORDERS_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
+  await waitForSpinners(page);
+  await expect(page.getByRole('heading', { name: 'Order Management' })).toBeVisible({ timeout: 60000 });
+  await expect(page.locator('tbody tr').first(), 'Orders should load.').toBeVisible({ timeout: 90000 });
+}
+
+/** @param {import('@playwright/test').Page} page */
+async function waitForSpinners(page) {
+  for (const selector of SPINNERS) {
+    await page.locator(selector).first().waitFor({ state: 'hidden', timeout: 60000 }).catch(() => {});
+  }
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {import('@playwright/test').Locator} locator
+ */
+async function clickWhenReady(page, locator) {
+  await locator.waitFor({ state: 'visible', timeout: 30000 });
+  let lastError;
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    await waitForSpinners(page);
+    try {
+      await locator.click({ timeout: 8000 });
+      return;
+    } catch (error) {
+      lastError = error;
+      await page.waitForTimeout(1000);
+    }
+  }
+  throw lastError;
+}
+
+/** @param {import('@playwright/test').Page} page */
+function searchInput(page) {
+  return page.getByRole('textbox', { name: 'Search...' });
+}
+
+/** @param {import('@playwright/test').Page} page */
+function startDate(page) {
+  return page.locator('input[formcontrolname="start"]');
+}
+
+/** @param {import('@playwright/test').Page} page */
+function endDate(page) {
+  return page.locator('input[formcontrolname="end"]');
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} text
+ */
+async function search(page, text) {
+  await searchInput(page).fill(text);
+  await expect(searchInput(page)).toHaveValue(text);
+  await clickWhenReady(page, page.locator('button[mattooltip="Search"]'));
+  await page.waitForTimeout(500);
+  await waitForSpinners(page);
+}
+
+/** @param {import('@playwright/test').Page} page */
+async function getTotalResults(page) {
+  const label = page.getByText(/Total \d+ results found/).first();
+  await expect(label).toBeVisible({ timeout: 60000 });
+  return Number(((await label.innerText()).match(/Total (\d+) results found/) || [])[1]);
+}
+
+/** @param {import('@playwright/test').Page} page */
+function activePage(page) {
+  return page.locator('.ngx-pagination li.current').first();
+}
+
+/** @param {import('@playwright/test').Page} page */
+async function readRows(page) {
+  return page.locator('tbody tr').evaluateAll((rows) => rows.map((row) => [...row.querySelectorAll('td')]
+    .map((cell) => (cell.textContent || '').replace(/\s+/g, ' ').trim())));
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {Date} from
+ * @param {Date} to
+ */
+async function expectRowsWithinRange(page, from, to) {
+  for (const row of await readRows(page)) {
+    const date = parseRowDate(row[COL.date]);
+    expect(date >= startOfDay(from) && date <= endOfDay(to), `Order ${row[COL.orderId]} (${row[COL.date]}) should be inside the range.`).toBe(true);
+  }
+}
+
+/**
+ * Picks a day in the open range calendar, moving forward/back by month
+ * until the day's cell is shown (cells are labelled with the full date).
+ * @param {import('@playwright/test').Page} page
+ * @param {Date} date
+ */
+async function pickCalendarDay(page, date) {
+  const monthName = date.toLocaleString('en-US', { month: 'long' });
+  const label = new RegExp(`(${monthName} ${date.getDate()}, ${date.getFullYear()})|(${date.getDate()} ${monthName} ${date.getFullYear()})`);
+  for (let step = 0; step < 6; step += 1) {
+    const byAria = page.locator('mat-calendar .mat-calendar-body-cell').filter({ hasText: new RegExp(`^\\s*${date.getDate()}\\s*$`) });
+    const ariaLabels = await byAria.evaluateAll((cells) => cells.map((c) => c.getAttribute('aria-label') || ''));
+    const index = ariaLabels.findIndex((a) => label.test(a));
+    if (index >= 0) {
+      await clickWhenReady(page, byAria.nth(index));
+      return;
+    }
+    const periodLabel = (await page.locator('.mat-calendar-period-button').innerText()).trim();
+    const shownMonth = new Date(`1 ${periodLabel.replace(/^SEPT/i, 'SEP')}`);
+    const goBack = shownMonth.getFullYear() * 12 + shownMonth.getMonth() > date.getFullYear() * 12 + date.getMonth();
+    await clickWhenReady(page, page.getByRole('button', { name: goBack ? 'Previous month' : 'Next month' }));
+  }
+  throw new Error(`Calendar never showed ${date.toDateString()}.`);
+}
+
+/** @param {string} text dd/mm/yyyy HH:MM:SS am|pm (24h clock) */
+function parseRowDate(text) {
+  const [, d, m, y, hh, mm, ss] = text.match(/(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2}):(\d{2})/) || [];
+  return new Date(Number(y), Number(m) - 1, Number(d), Number(hh), Number(mm), Number(ss));
+}
+
+/** @param {number} days */
+function daysAgo(days) {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  return date;
+}
+
+/** @param {Date} date */
+function startOfDay(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0);
+}
+
+/** @param {Date} date */
+function endOfDay(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59);
+}
+
+/** @param {Date} date dd/mm/yyyy */
+function formatDate(date) {
+  const pad = (/** @type {number} */ n) => String(n).padStart(2, '0');
+  return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()}`;
+}

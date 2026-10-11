@@ -1,541 +1,539 @@
 // @ts-check
 // ============================================================
 // TMDone Admin Console - Accounts Management Module
-// Verification of page load, search, table, pagination, and row actions
+// URL: #/home/accounts-management
+//
+// Covers: page shell + stat cards, store / account-manager filters (and the
+// API they call), table, pagination, both downloads, Bulk Upload and Bulk
+// Assignment (opened and verified, NEVER submitted), the Delegate dialog
+// (verified and closed - there is no remove-delegation action), and a real
+// Assign round-trip on one of the user's test stores:
+//   reassign to a different manager -> verify -> assign back -> verify,
+// with an afterAll safety net that restores the original manager.
+// The round-trip runs on the first test store (Cafe Asiana, Food House,
+// Eat Fresh Store) whose current manager is in the assignable managers list,
+// because a manager that is not in that list could never be restored.
 // ============================================================
 
 import { test, expect } from '@playwright/test';
 import { loginToApp, goToPage } from '../helpers/loginHelper.js';
 
 const MODULE_URL = '#/home/accounts-management';
-const BULK_UPLOAD_FIXTURE = 'tests/fixtures/accounts-management-bulk-upload.csv';
-
-/** @param {import('@playwright/test').Locator} li */
-const clickPaginationLi = async (li) => {
-  const anchor = li.locator('a').first();
-  if (await anchor.count() > 0) {
-    await anchor.click({ force: true, noWaitAfter: true });
-  } else {
-    await li.click({ force: true, noWaitAfter: true });
-  }
-};
+const ROUND_TRIP_STORES = ['Cafe Asiana', 'Food House', 'Eat Fresh Store'];
+const DIALOG_STORE = 'Cafe Asiana';
+const COMBINED_FILTER_STORE = 'Food House';
+const TOOLBAR_TOOLTIPS = ['Download Account Managers List', 'Bulk Upload', 'Download', 'Bulk Assignment', 'Search'];
+const TABLE_HEADERS = [
+  'Branch Name',
+  'Delivery Zone',
+  'Status',
+  'Assigned Account Manager',
+  'Assigned Date',
+  'Temporary Account Manager',
+  'Date Range',
+  'Actions',
+];
+const COL = { name: 0, zone: 1, status: 2, manager: 3, assignedDate: 4, tempManager: 5, dateRange: 6 };
 
 /**
- * @param {import('@playwright/test').Page} page
- * @param {string} label
- * @param {number} fallbackIndex
+ * State of the Assign round-trip, kept at module level so the afterAll safety
+ * net can restore the original manager if a step fails midway.
+ * @type {{ store: string, originalId: string, originalName: string, newId: string, newName: string, restored: boolean } | null}
  */
-const selectDropdownOption = async (page, label, fallbackIndex = 0) => {
-  const compactLabel = label.replace(/\s+/g, '');
-  const dropdown = page.locator(
-    `mat-select[aria-label*="${label}" i], ` +
-    `mat-select[placeholder*="${label}" i], ` +
-    `mat-select[formcontrolname*="${label}" i], ` +
-    `mat-select[formcontrolname*="${compactLabel}" i], ` +
-    `mat-form-field:has-text("${label}") mat-select, ` +
-    `[role="combobox"][aria-label*="${label}" i], ` +
-    `mat-label:has-text("${label}") >> xpath=ancestor::mat-form-field//mat-select`
-  ).first();
+let assignRoundTrip = null;
 
-  let target = dropdown;
-  if (!(await target.isVisible().catch(() => false))) {
-    target = page.locator('mat-select, [role="combobox"]').nth(fallbackIndex);
+/** @param {import('@playwright/test').Page} page */
+async function waitForNoSpinner(page) {
+  for (const selector of ['.ngx-spinner-overlay', 'app-page-loader', '.loading-overlay', '.loading-spinner']) {
+    await page.locator(selector).first().waitFor({ state: 'hidden', timeout: 20000 }).catch(() => {});
   }
+}
 
-  if (!(await target.isVisible().catch(() => false))) {
-    console.log(`Dropdown "${label}" not found. Passing gracefully.`);
-    return false;
+/**
+ * Real click that survives the cycling loader overlay.
+ * @param {import('@playwright/test').Page} page
+ * @param {import('@playwright/test').Locator} locator
+ */
+async function clickWhenReady(page, locator, attempts = 5) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    await waitForNoSpinner(page);
+    try {
+      await locator.click({ timeout: 8000 });
+      return;
+    } catch (error) {
+      lastError = error;
+      await page.waitForTimeout(800);
+    }
   }
+  throw lastError;
+}
 
-  await target.click({ force: true });
-  await page.waitForTimeout(800);
+/** @param {import('@playwright/test').Page} page */
+const tableRows = (page) => page.locator('table tbody tr').filter({ has: page.locator('td') });
 
-  const options = page.locator('mat-option, [role="option"]').filter({
-    hasNotText: /select all|all stores|all account managers/i,
+/** @param {import('@playwright/test').Page} page */
+const toolbarButton = (page, /** @type {string} */ tooltip) => page.locator(`button[mattooltip="${tooltip}"]`).first();
+
+/** @param {import('@playwright/test').Page} page */
+const activeDialog = (page) => page.locator('mat-dialog-container').last();
+
+/** @param {import('@playwright/test').Page} page */
+async function totalResults(page) {
+  const text = await page.locator('body').innerText();
+  const match = text.match(/Total\s+(\d+)\s+results?\s+found/i);
+  return match ? parseInt(match[1], 10) : -1;
+}
+
+/**
+ * @param {import('@playwright/test').Locator} row
+ * @param {number} column
+ */
+async function cellText(row, column) {
+  return ((await row.locator('td').nth(column).innerText()) || '').replace(/\s+/g, ' ').trim();
+}
+
+/** @param {import('@playwright/test').Page} page */
+async function openAccountsManagement(page) {
+  // Navigating to the same hash URL is an in-page hash change that keeps the
+  // component (and its selected filters) alive, so reload for a clean page.
+  if (/accounts-management/.test(page.url())) {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 120000 });
+  } else {
+    await goToPage(page, MODULE_URL);
+  }
+  await expect(page).toHaveURL(/accounts-management/);
+  await expect(tableRows(page).first(), 'Accounts table should load rows.').toBeVisible({ timeout: 45000 });
+  await waitForNoSpinner(page);
+}
+
+/**
+ * Waits for the list API call triggered by `action` and returns its request
+ * payload and response body.
+ * @param {import('@playwright/test').Page} page
+ * @param {() => Promise<void>} action
+ */
+async function withListResponse(page, action) {
+  const responsePromise = page.waitForResponse(
+    (response) => /\/api\/management\/list/i.test(response.url()) && response.request().method() === 'POST',
+    { timeout: 45000 }
+  );
+  await action();
+  const response = await responsePromise;
+  expect(response.status(), 'Accounts list API should succeed.').toBe(200);
+  const payload = JSON.parse(response.request().postData() || '{}');
+  const body = await response.json();
+  await waitForNoSpinner(page);
+  return { payload, body };
+}
+
+/** @param {import('@playwright/test').Page} page */
+async function clickToolbarSearch(page) {
+  return withListResponse(page, () => clickWhenReady(page, toolbarButton(page, 'Search')));
+}
+
+/**
+ * Picks a store in the multi-select "Select a store" filter. No dialog is
+ * open on the list page, so Escape safely closes the panel.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} storeName
+ */
+async function selectStoreFilter(page, storeName) {
+  const storeSelect = page.locator('mat-select[formcontrolname="storeArr"]').first();
+  await clickWhenReady(page, storeSelect);
+  const option = page.locator('mat-option').filter({ hasText: new RegExp(`^\\s*${storeName}\\s*$`) }).first();
+  await expect(option, `Store filter should offer "${storeName}".`).toBeVisible({ timeout: 30000 });
+  await option.click();
+  await expect(option).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.cdk-overlay-pane mat-option').first()).toBeHidden({ timeout: 10000 });
+  await expect(storeSelect).toContainText(storeName);
+}
+
+/**
+ * Picks an account manager in the list-page "Select Account Manager" filter.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} managerName
+ */
+async function selectManagerFilter(page, managerName) {
+  const managerSelect = page.locator('mat-select:not([formcontrolname])').first();
+  await clickWhenReady(page, managerSelect);
+  const option = page.locator('mat-option').filter({ hasText: new RegExp(`^\\s*${managerName.trim()}\\s*$`) }).first();
+  await expect(option, `Account Manager filter should offer "${managerName}".`).toBeVisible({ timeout: 30000 });
+  await option.click();
+  await expect(page.locator('.cdk-overlay-pane mat-option').first()).toBeHidden({ timeout: 10000 });
+  await expect(managerSelect).toContainText(managerName.trim());
+}
+
+/**
+ * Filters the list down to one store and returns its row.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} storeName
+ */
+async function filterToStore(page, storeName) {
+  await openAccountsManagement(page);
+  await selectStoreFilter(page, storeName);
+  const { payload, body } = await clickToolbarSearch(page);
+  expect(payload.StoreIds, 'Store filter should send exactly one store id.').toHaveLength(1);
+  expect(body.TotalItemCount, `Filtering by "${storeName}" should return exactly one branch.`).toBe(1);
+  const row = tableRows(page).filter({ has: page.locator('td', { hasText: new RegExp(`^\\s*${storeName}\\s*$`) }) }).first();
+  await expect(row, `"${storeName}" row should be listed.`).toBeVisible({ timeout: 20000 });
+  await expect(tableRows(page)).toHaveCount(1);
+  return row;
+}
+
+/**
+ * Opens a row's Assign dialog and returns the store's currently assigned
+ * manager (from the dialog's own API call) and the assignable managers.
+ * @param {import('@playwright/test').Page} page
+ * @param {import('@playwright/test').Locator} row
+ */
+async function openAssignDialog(page, row) {
+  const assignedPromise = page.waitForResponse((r) => /getAssignedAccountManager/i.test(r.url()), { timeout: 45000 });
+  const managersPromise = page.waitForResponse((r) => /getAccountManagers/i.test(r.url()) && r.request().method() === 'GET', {
+    timeout: 45000,
   });
-  const optionCount = await options.count();
+  await clickWhenReady(page, row.locator('button').filter({ hasText: /^\s*Assign\s*$/ }).first());
+  const assigned = await (await assignedPromise).json();
+  /** @type {{ Id: string, FullName: string }[]} */
+  const managers = await (await managersPromise).json();
 
-  if (optionCount === 0) {
-    await page.keyboard.press('Escape').catch(() => {});
-    console.log(`Dropdown "${label}" has no selectable options. Passing gracefully.`);
-    return false;
-  }
-
-  const option = options.first();
-  const optionText = ((await option.textContent().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-  await option.click({ force: true });
-  await page.waitForTimeout(500);
-
-  if (await page.locator('mat-option, [role="option"]').first().isVisible().catch(() => false)) {
-    await page.keyboard.press('Escape').catch(() => {});
-  }
-
-  console.log(`Selected ${label}: ${optionText || 'first available option'}`);
-  return true;
-};
+  const dialog = activeDialog(page);
+  await expect(dialog, 'Assign dialog should open.').toBeVisible({ timeout: 15000 });
+  await expect(dialog).toContainText('Select Account Manager');
+  await expect(dialog.locator('button').filter({ hasText: /^\s*Assign\s*$/ })).toBeVisible();
+  await expect(dialog.locator('button').filter({ hasText: /^\s*Close\s*$/ })).toBeVisible();
+  return { dialog, assigned, managers };
+}
 
 /**
  * @param {import('@playwright/test').Page} page
+ * @param {import('@playwright/test').Locator} dialog
  */
-const runSearch = async (page) => {
-  const searchBtn = page.locator(
-    'button.search-btn, ' +
-    'button:has(mat-icon:text("search")), ' +
-    'button[aria-label*="search" i], ' +
-    'button:has-text("Search"), ' +
-    'a:has-text("Search")'
-  ).first();
+async function closeDialog(page, dialog) {
+  await clickWhenReady(page, dialog.locator('button').filter({ hasText: /^\s*Close\s*$/ }).first());
+  await expect(page.locator('mat-dialog-container')).toHaveCount(0, { timeout: 10000 });
+}
 
-  if (await searchBtn.isVisible().catch(() => false)) {
-    await searchBtn.click({ force: true });
+/**
+ * Picks a manager in the open Assign dialog and submits it.
+ * @param {import('@playwright/test').Page} page
+ * @param {import('@playwright/test').Locator} dialog
+ * @param {{ Id: string, FullName: string }} manager
+ */
+async function assignManagerInDialog(page, dialog, manager) {
+  const managerName = manager.FullName.trim();
+  const managerSelect = dialog.locator('mat-select').first();
+  await clickWhenReady(page, managerSelect);
+  const option = page.locator('mat-option').filter({ hasText: new RegExp(`^\\s*${managerName}\\s*$`) }).first();
+  await expect(option, `Assign dialog should offer "${managerName}".`).toBeVisible({ timeout: 20000 });
+  await option.click();
+  await expect(page.locator('.cdk-overlay-pane mat-option').first()).toBeHidden({ timeout: 10000 });
+  await expect(managerSelect).toContainText(managerName);
+
+  const assignResponsePromise = page.waitForResponse(
+    (r) =>
+      /\/api\//i.test(r.url()) &&
+      ['POST', 'PUT'].includes(r.request().method()) &&
+      !/management\/list|dashboard|getNotifications/i.test(r.url()),
+    { timeout: 45000 }
+  );
+  await clickWhenReady(page, dialog.locator('button').filter({ hasText: /^\s*Assign\s*$/ }).first());
+  const assignResponse = await assignResponsePromise;
+  const bodyText = await assignResponse.text().catch(() => '');
+  console.log(`Assign request: ${assignResponse.request().method()} ${assignResponse.url()} ${assignResponse.request().postData() || ''} -> ${assignResponse.status()} ${bodyText.slice(0, 200)}`);
+  expect(assignResponse.status(), `Assign "${managerName}" should succeed (${bodyText.slice(0, 200)}).`).toBe(200);
+  expect(`${assignResponse.request().postData() || ''} ${assignResponse.url()}`, 'Assign request should carry the chosen manager id.').toContain(manager.Id);
+
+  const okButton = page.locator('.swal2-confirm').filter({ visible: true }).first();
+  if (await okButton.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false)) {
+    console.log(`Assign feedback: ${(await page.locator('.swal2-popup').innerText()).replace(/\s+/g, ' ')}`);
+    await okButton.click();
+  }
+  await expect(page.locator('mat-dialog-container'), 'Assign dialog should close after assigning.').toHaveCount(0, { timeout: 15000 });
+}
+
+/**
+ * Reads the store's assigned manager id the same way the app does (by
+ * opening the Assign dialog) and closes the dialog without changes.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} storeName
+ */
+async function readAssignedManager(page, storeName) {
+  const row = await filterToStore(page, storeName);
+  const { dialog, assigned, managers } = await openAssignDialog(page, row);
+  const rowManager = await cellText(row, COL.manager);
+  await closeDialog(page, dialog);
+  return { assigned, managers, rowManager };
+}
+
+/**
+ * Restores the round-trip store's original manager.
+ * @param {import('@playwright/test').Page} page
+ */
+async function restoreOriginalManager(page) {
+  if (!assignRoundTrip || assignRoundTrip.restored) return;
+  const { store, originalId, originalName } = assignRoundTrip;
+  const row = await filterToStore(page, store);
+  const { dialog, assigned } = await openAssignDialog(page, row);
+  if (assigned?.Id === originalId) {
+    await closeDialog(page, dialog);
   } else {
-    await page.keyboard.press('Enter').catch(() => {});
+    await assignManagerInDialog(page, dialog, { Id: originalId, FullName: originalName });
   }
-
-  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-  await page.waitForTimeout(1000);
-};
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {RegExp} textPattern
- * @param {string} selector
- */
-const findControlByMetadata = async (page, textPattern, selector = 'button, a, [role="button"]') => {
-  const controls = page.locator(selector);
-  const count = await controls.count();
-
-  for (let index = 0; index < count; index += 1) {
-    const control = controls.nth(index);
-    const metadata = await control.evaluate((el) => [
-      el.textContent || '',
-      el.getAttribute('aria-label') || '',
-      el.getAttribute('title') || '',
-      el.getAttribute('mattooltip') || '',
-      el.getAttribute('ng-reflect-message') || '',
-      el.getAttribute('class') || '',
-    ].join(' ')).catch(() => '');
-
-    if (textPattern.test(metadata.replace(/\s+/g, ' ').trim())) {
-      return control;
-    }
-  }
-
-  return null;
-};
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {RegExp} textPattern
- */
-const clickDownloadControl = async (page, textPattern = /download|export/i) => {
-  const directControl = await findControlByMetadata(page, textPattern);
-
-  if (!directControl || !(await directControl.isVisible().catch(() => false))) {
-    console.log(`Download control matching ${textPattern} not found. Passing gracefully.`);
-    return false;
-  }
-
-  try {
-    const [download] = await Promise.all([
-      page.waitForEvent('download', { timeout: 12000 }),
-      directControl.click({ force: true }),
-    ]);
-    console.log(`Download triggered: ${download.suggestedFilename()}`);
-  } catch {
-    console.log('Download click completed, but no download event was captured. It may open inline or call an API.');
-  }
-
-  await page.waitForTimeout(1000);
-  return true;
-};
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {RegExp} textPattern
- */
-const openButtonOrMenuAction = async (page, textPattern) => {
-  const directButton = await findControlByMetadata(page, textPattern);
-
-  if (directButton && await directButton.isVisible().catch(() => false)) {
-    await directButton.click({ force: true });
-    await page.waitForTimeout(1000);
-    return true;
-  }
-
-  const menuTrigger = page.locator(
-    'button:has(mat-icon:text("more_vert")), ' +
-    'button:has(mat-icon:text("more_horiz")), ' +
-    'button[aria-label*="more" i], ' +
-    '.mat-menu-trigger'
-  ).first();
-
-  if (!(await menuTrigger.isVisible().catch(() => false))) {
-    return false;
-  }
-
-  await menuTrigger.click({ force: true });
-  await page.waitForTimeout(500);
-
-  const menuAction = page.locator('[role="menuitem"], .mat-menu-item, button, a').filter({ hasText: textPattern }).first();
-  if (!(await menuAction.isVisible().catch(() => false))) {
-    await page.keyboard.press('Escape').catch(() => {});
-    return false;
-  }
-
-  await menuAction.click({ force: true });
-  await page.waitForTimeout(1000);
-  return true;
-};
-
-/**
- * @param {import('@playwright/test').Page} page
- * @param {'Assign' | 'Delegate'} actionName
- */
-const findRowActionButton = async (page, actionName) => {
-  const rows = page.locator('tbody tr, mat-row');
-  const rowCount = await rows.count();
-
-  for (let index = 0; index < rowCount; index += 1) {
-    const row = rows.nth(index);
-    const rowText = ((await row.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-    const actionButton = row.locator('button').filter({ hasText: new RegExp(`^${actionName}$`, 'i') }).first();
-
-    if (!(await actionButton.isVisible().catch(() => false))) {
-      continue;
-    }
-
-    if (actionName === 'Assign' && !/-\s+-\s+-\s+Assign\s+Delegate/i.test(rowText)) {
-      continue;
-    }
-
-    return { row, actionButton, rowText };
-  }
-
-  const fallbackRow = rows.first();
-  const fallbackButton = fallbackRow.locator('button').filter({ hasText: new RegExp(`^${actionName}$`, 'i') }).first();
-  if (await fallbackButton.isVisible().catch(() => false)) {
-    const rowText = ((await fallbackRow.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-    return { row: fallbackRow, actionButton: fallbackButton, rowText };
-  }
-
-  return null;
-};
-
-/**
- * @param {import('@playwright/test').Page} page
- */
-const handleOptionalActionFeedback = async (page) => {
-  const confirmOrCancel = page.locator(
-    '.swal2-popup button:has-text("Cancel"), ' +
-    '.swal2-popup button:has-text("No"), ' +
-    'mat-dialog-container button:has-text("Cancel"), ' +
-    'mat-dialog-container button:has-text("Close"), ' +
-    '[role="dialog"] button:has-text("Cancel"), ' +
-    '[role="dialog"] button:has-text("Close")'
-  ).first();
-
-  if (await confirmOrCancel.isVisible().catch(() => false)) {
-    await confirmOrCancel.click({ force: true });
-    await page.waitForTimeout(1000);
-    return 'confirmation-opened-and-cancelled';
-  }
-
-  const feedback = page.locator(
-    '.swal2-popup, .toast-message, .toast-container, .mat-snack-bar-container, simple-snack-bar, mat-dialog-container, [role="dialog"]'
-  ).first();
-
-  if (await feedback.isVisible().catch(() => false)) {
-    const feedbackText = ((await feedback.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-    await page.keyboard.press('Escape').catch(() => {});
-    return feedbackText || 'feedback-visible';
-  }
-
-  return 'inline-action-or-table-refresh';
-};
+  const check = await readAssignedManager(page, store);
+  expect(check.assigned?.Id, `"${store}" should be back on its original manager "${originalName}".`).toBe(originalId);
+  assignRoundTrip.restored = true;
+}
 
 test.describe.serial('Accounts Management Module', () => {
   test.beforeEach(async ({ page }) => {
+    test.setTimeout(240000);
     await loginToApp(page);
-    await goToPage(page, MODULE_URL);
   });
 
-  test('AM-01: Verify Accounts Management page loads with data shell', async ({ page }) => {
-    expect(page.url()).toContain('accounts-management');
-
-    const pageShell = page.locator('table, mat-table, .table-responsive, mat-card, .card').first();
-    const shellVisible = await pageShell.isVisible({ timeout: 20000 }).catch(() => false);
-    if (!shellVisible) {
-      const bodyText = await page.locator('body').innerText().catch(() => '');
-      expect(bodyText.length, 'Accounts Management content should render even when the table shell is absent.').toBeGreaterThan(100);
-      console.log('AM-01 INFO: Accounts table/card shell is not visible in this environment.');
-      return;
+  test.afterAll(async ({ browser }) => {
+    if (!assignRoundTrip || assignRoundTrip.restored) return;
+    test.setTimeout(240000);
+    const page = await browser.newPage();
+    try {
+      await loginToApp(page);
+      await restoreOriginalManager(page);
+      console.log(`afterAll safety net: restored "${assignRoundTrip.store}" to "${assignRoundTrip.originalName}".`);
+    } finally {
+      await page.close();
     }
-
-    console.log('AM-01 PASSED: Navigated to Accounts Management page.');
   });
 
-  test('AM-02: Search functionality filters accounts data', async ({ page }) => {
-    const searchInput = page.locator(
-      'input[placeholder*="Search" i], input[aria-label*="search" i], input[type="search"]'
-    ).first();
+  test('AM-01: Accounts Management page loads with stat cards, toolbar, filters and table', async ({ page }) => {
+    await openAccountsManagement(page);
+    await expect(page.locator('h1, h2, h3, h4, .breadcrumb-item').filter({ hasText: 'Accounts Management' }).first()).toBeVisible();
 
-    if (!(await searchInput.isVisible().catch(() => false))) {
-      console.log('AM-02: Search input not found. Passing gracefully.');
-      return;
+    const body = (await page.locator('body').innerText()).replace(/\s+/g, ' ');
+    expect(body, 'Brand stat card should show a count.').toMatch(/Number of Accounts per Brand \d+ BRAND\(s\)/);
+    expect(body, 'Branch stat card should show a count.').toMatch(/Number of Accounts per Branch \d+ BRANCH\(s\)/);
+    expect(body, 'Not Assigned stat card should show a count.').toMatch(/Not Assigned Number of Accounts per Branch \d+ BRANCH\(s\)/);
+
+    for (const tooltip of TOOLBAR_TOOLTIPS) {
+      await expect(toolbarButton(page, tooltip), `Toolbar should offer "${tooltip}".`).toBeVisible();
     }
+    await expect(page.locator('mat-select[formcontrolname="storeArr"]')).toBeVisible();
+    await expect(page.locator('mat-form-field').filter({ hasText: 'Select Account Manager' }).first()).toBeVisible();
 
-    await searchInput.fill('Account');
-    await page.waitForTimeout(750);
-
-    const searchBtn = page.locator(
-      'button.search-btn, button:has(mat-icon:text("search")), button[aria-label*="search" i], button:has-text("Search")'
-    ).first();
-
-    if (await searchBtn.isVisible().catch(() => false)) {
-      await searchBtn.click({ force: true });
-    } else {
-      await searchInput.press('Enter');
-    }
-
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    await page.waitForTimeout(1000);
-
-    const rowsAfterSearch = await page.locator('tbody tr, mat-row').count();
-    console.log(`AM-02: Rows after search "Account": ${rowsAfterSearch}`);
-    expect(rowsAfterSearch).toBeGreaterThanOrEqual(0);
-
-    await searchInput.fill('');
-    if (await searchBtn.isVisible().catch(() => false)) {
-      await searchBtn.click({ force: true });
-    } else {
-      await searchInput.press('Enter');
-    }
-
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    console.log('AM-02 PASSED: Search functionality verified.');
+    const headers = (await page.locator('table thead th').allInnerTexts()).map((h) => h.trim());
+    expect(headers).toEqual(TABLE_HEADERS);
+    console.log('AM-01 PASSED: Page shell, stat cards, toolbar, filters and table headers verified.');
   });
 
-  test('AM-03: Verify accounts table headers and rows render correctly', async ({ page }) => {
-    const table = page.locator('table, mat-table, .table-responsive').first();
-    await expect(table, 'Accounts table shell should be visible.').toBeVisible({ timeout: 20000 });
-
-    const headerCount = await page.locator('thead th, th, mat-header-cell').count();
-    const rowCount = await page.locator('tbody tr, mat-row').count();
-
-    console.log(`AM-03: Accounts table headers: ${headerCount}`);
-    console.log(`AM-03: Accounts table rows: ${rowCount}`);
-
-    expect(headerCount).toBeGreaterThan(0);
-    expect(rowCount).toBeGreaterThanOrEqual(0);
-    console.log('AM-03 PASSED: Accounts table structure verified.');
+  test('AM-02: Store filter narrows the list to the selected store', async ({ page }) => {
+    const row = await filterToStore(page, DIALOG_STORE);
+    expect(await totalResults(page)).toBe(1);
+    expect(await cellText(row, COL.name)).toBe(DIALOG_STORE);
+    console.log(`AM-02 PASSED: Store filter returned only "${DIALOG_STORE}".`);
   });
 
-  test('AM-04: Pagination next and previous work when available', async ({ page }) => {
-    const nextLi = page.locator(
-      '.ngx-pagination li.pagination-next, li.pagination-next, li.page-item'
-    ).filter({ hasText: /next|»/i }).first();
+  test('AM-03: Table rows render with status, manager and Assign/Delegate actions', async ({ page }) => {
+    const { body } = await withListResponse(page, () => openAccountsManagement(page));
+    expect(body.TotalItemCount, 'Accounts list should contain branches.').toBeGreaterThan(0);
+    await expect(tableRows(page)).toHaveCount(Math.min(body.PageSize, body.TotalItemCount));
+    await expect.poll(() => totalResults(page)).toBe(body.TotalItemCount);
 
-    const nextVisible = await nextLi.isVisible().catch(() => false);
-    const nextDisabled = nextVisible
-      ? await nextLi.evaluate((el) => el.classList.contains('disabled') || !el.querySelector('a')).catch(() => true)
-      : true;
-
-    if (!nextVisible || nextDisabled) {
-      console.log('AM-04: Pagination Next is hidden or disabled. Passing gracefully.');
-      return;
-    }
-
-    await clickPaginationLi(nextLi);
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    await page.waitForTimeout(1000);
-    console.log('AM-04: Navigated to next accounts page.');
-
-    const prevLi = page.locator(
-      '.ngx-pagination li.pagination-previous, li.pagination-previous, li.page-item'
-    ).filter({ hasText: /prev|previous|«/i }).first();
-
-    const prevVisible = await prevLi.isVisible().catch(() => false);
-    const prevDisabled = prevVisible
-      ? await prevLi.evaluate((el) => el.classList.contains('disabled') || !el.querySelector('a')).catch(() => true)
-      : true;
-
-    if (!prevVisible || prevDisabled) {
-      console.log('AM-04: Previous is hidden or disabled after moving next. Passing gracefully.');
-      return;
-    }
-
-    await clickPaginationLi(prevLi);
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    await page.waitForTimeout(1000);
-    console.log('AM-04 PASSED: Accounts pagination verified.');
+    const firstRow = tableRows(page).first();
+    expect(await cellText(firstRow, COL.name)).toBe(body.Items[0].Name.trim());
+    expect(await cellText(firstRow, COL.status)).toBe(body.Items[0].Status);
+    await expect(firstRow.locator('button').filter({ hasText: /^\s*Assign\s*$/ })).toBeVisible();
+    await expect(firstRow.locator('button').filter({ hasText: /^\s*Delegate\s*$/ })).toBeVisible();
+    console.log(`AM-03 PASSED: ${body.TotalItemCount} branches; first page rows match the API.`);
   });
 
-  test('AM-05: First row action/edit control opens a safe view when available', async ({ page }) => {
-    const rows = page.locator('tbody tr, mat-row');
-    const rowCount = await rows.count();
+  test('AM-04: Pagination next and previous move between pages', async ({ page }) => {
+    await openAccountsManagement(page);
+    const nextLi = page.locator('.ngx-pagination li.pagination-next').first();
+    await expect(nextLi, 'Accounts list spans multiple pages, so Next should be enabled.').not.toHaveClass(/disabled/);
+    const firstRowPage1 = await cellText(tableRows(page).first(), COL.name);
 
-    if (rowCount === 0) {
-      console.log('AM-05: No account rows available. Passing gracefully.');
-      return;
-    }
+    const { payload: nextPayload } = await withListResponse(page, () => clickWhenReady(page, nextLi.locator('a')));
+    expect(nextPayload.Page).toBe(2);
+    await expect(page.locator('.ngx-pagination li.current').first()).toContainText('2');
+    await expect.poll(async () => cellText(tableRows(page).first(), COL.name)).not.toBe(firstRowPage1);
 
-    const firstRow = rows.first();
-    const actionControl = firstRow.locator(
-      'button:has(mat-icon:text("edit")), ' +
-      'button:has(mat-icon:text("visibility")), ' +
-      'button:has(mat-icon:text("more_vert")), ' +
-      'button:has(mat-icon:text("more_horiz")), ' +
-      'button[aria-label*="edit" i], ' +
-      'button[aria-label*="view" i], ' +
-      'button:has-text("Edit"), ' +
-      'button:has-text("View"), ' +
-      'a:has-text("Edit"), ' +
-      'a:has-text("View")'
-    ).first();
-
-    if (!(await actionControl.isVisible().catch(() => false))) {
-      console.log('AM-05: Row action/edit control not visible. Passing gracefully.');
-      return;
-    }
-
-    await actionControl.click({ force: true, noWaitAfter: true });
-    await page.waitForTimeout(1000);
-
-    const menuItem = page.locator(
-      'button[role="menuitem"]:has-text("Edit"), ' +
-      'button[role="menuitem"]:has-text("View"), ' +
-      '.mat-menu-item:has-text("Edit"), ' +
-      '.mat-menu-item:has-text("View")'
-    ).first();
-
-    if (await menuItem.isVisible().catch(() => false)) {
-      await menuItem.click({ force: true, noWaitAfter: true });
-      await page.waitForTimeout(1000);
-    }
-
-    const dialogOrFormVisible = await page.locator(
-      'mat-dialog-container, .modal-dialog, [role="dialog"], form, input'
-    ).first().isVisible().catch(() => false);
-    const stayedInModule = page.url().includes('accounts-management');
-
-    expect(dialogOrFormVisible || stayedInModule).toBe(true);
-
-    await page.keyboard.press('Escape').catch(() => {});
-    console.log('AM-05 PASSED: First row action/edit path verified safely.');
+    const prevLi = page.locator('.ngx-pagination li.pagination-previous').first();
+    await expect(prevLi).not.toHaveClass(/disabled/);
+    const { payload: prevPayload } = await withListResponse(page, () => clickWhenReady(page, prevLi.locator('a')));
+    expect(prevPayload.Page).toBe(1);
+    await expect(page.locator('.ngx-pagination li.current').first()).toContainText('1');
+    await expect.poll(async () => cellText(tableRows(page).first(), COL.name)).toBe(firstRowPage1);
+    console.log('AM-04 PASSED: Pagination next/previous verified.');
   });
 
-  test('AM-06: Select store and account manager, then search', async ({ page }) => {
-    const selectedStore = await selectDropdownOption(page, 'Store', 0);
-    const selectedAccountManager = await selectDropdownOption(page, 'Account Manager', 1);
+  test('AM-05: Account Manager filter returns only that manager\'s branches', async ({ page }) => {
+    const { rowManager } = await readAssignedManager(page, COMBINED_FILTER_STORE);
+    await openAccountsManagement(page);
+    await selectManagerFilter(page, rowManager);
+    const { payload, body } = await clickToolbarSearch(page);
+    expect(payload.AccountManagerId, 'Manager filter should send the manager id.').toBeTruthy();
+    expect(body.TotalItemCount, `"${rowManager}" manages at least ${COMBINED_FILTER_STORE}.`).toBeGreaterThan(0);
 
-    if (!selectedStore && !selectedAccountManager) {
-      console.log('AM-06: Store and Account Manager dropdowns not found. Passing gracefully.');
-      return;
+    const rows = tableRows(page);
+    await expect(rows.first()).toBeVisible();
+    const count = await rows.count();
+    for (let index = 0; index < count; index += 1) {
+      const managers = `${await cellText(rows.nth(index), COL.manager)} ${await cellText(rows.nth(index), COL.tempManager)}`;
+      expect(managers.toLowerCase(), `Row ${index + 1} should belong to "${rowManager}".`).toContain(rowManager.trim().toLowerCase());
     }
-
-    await runSearch(page);
-
-    const table = page.locator('table, mat-table, .table-responsive').first();
-    await expect(table, 'Accounts table should remain visible after filter search.').toBeVisible({ timeout: 15000 });
-
-    const rowCount = await page.locator('tbody tr, mat-row').count();
-    console.log(`AM-06 PASSED: Filter search completed. Rows visible: ${rowCount}`);
+    console.log(`AM-05 PASSED: Manager filter "${rowManager}" returned ${body.TotalItemCount} branches, all assigned to that manager.`);
   });
 
-  test('AM-07: Download accounts data when available', async ({ page }) => {
-    await runSearch(page);
-    const clicked = await clickDownloadControl(page, /(^|\s)download(\s|$)|btn-download(\s|$)|export|excel|csv/i);
-    expect(clicked || page.url().includes('accounts-management')).toBe(true);
-    console.log('AM-07 PASSED: Accounts download action verified.');
+  test('AM-06: Store + Account Manager filters combine (match and no-match)', async ({ page }) => {
+    const { rowManager, managers } = await readAssignedManager(page, COMBINED_FILTER_STORE);
+
+    await openAccountsManagement(page);
+    await selectStoreFilter(page, COMBINED_FILTER_STORE);
+    await selectManagerFilter(page, rowManager);
+    const matching = await clickToolbarSearch(page);
+    expect(matching.body.TotalItemCount, `"${COMBINED_FILTER_STORE}" + its own manager should match one branch.`).toBe(1);
+    await expect(tableRows(page)).toHaveCount(1);
+
+    const otherManager = managers.find((m) => m.FullName.trim() && m.FullName.trim().toLowerCase() !== rowManager.toLowerCase());
+    expect(otherManager, 'Another account manager should exist for the no-match check.').toBeTruthy();
+    await selectManagerFilter(page, /** @type {{FullName: string}} */ (otherManager).FullName);
+    const nonMatching = await clickToolbarSearch(page);
+    expect(nonMatching.body.TotalItemCount, `"${COMBINED_FILTER_STORE}" + another manager should match nothing.`).toBe(0);
+    await expect(tableRows(page)).toHaveCount(0);
+    await expect.poll(() => totalResults(page)).toBe(0);
+    console.log('AM-06 PASSED: Combined store/manager filters verified.');
   });
 
-  test('AM-08: Bulk upload control opens and accepts a file selection safely', async ({ page }) => {
-    const opened = await openButtonOrMenuAction(page, /bulk upload|upload/i);
-    const fileInput = page.locator('input[type="file"]').first();
-
-    if (!opened && !(await fileInput.count())) {
-      console.log('AM-08: Bulk Upload control not found. Passing gracefully.');
-      return;
-    }
-
-    if (!(await fileInput.isVisible().catch(() => false)) && !(await fileInput.count())) {
-      console.log('AM-08: File input not found after opening Bulk Upload. Passing gracefully.');
-      await page.keyboard.press('Escape').catch(() => {});
-      return;
-    }
-
-    await fileInput.setInputFiles(BULK_UPLOAD_FIXTURE);
-    await page.waitForTimeout(1000);
-
-    const submitButton = page.locator(
-      'button:has-text("Upload"), button:has-text("Submit"), button:has-text("Save"), button:has-text("Import")'
-    ).first();
-    const submitVisible = await submitButton.isVisible().catch(() => false);
-
-    expect(await fileInput.count()).toBeGreaterThan(0);
-    console.log(`AM-08 PASSED: Bulk upload file selected safely. Submit visible: ${submitVisible}`);
-
-    await page.keyboard.press('Escape').catch(() => {});
+  test('AM-07: Download exports the accounts list as Excel', async ({ page }) => {
+    await openAccountsManagement(page);
+    const [download] = await Promise.all([
+      page.waitForEvent('download', { timeout: 90000 }),
+      clickWhenReady(page, toolbarButton(page, 'Download')),
+    ]);
+    expect(download.suggestedFilename()).toMatch(/^TMDONE_Accounts_Management.*\.xlsx$/i);
+    expect(await download.failure()).toBeNull();
+    console.log(`AM-07 PASSED: Downloaded ${download.suggestedFilename()}.`);
   });
 
-  test('AM-09: Download Account Manager list when available', async ({ page }) => {
-    const clicked = await clickDownloadControl(page, /download account manager|account managers list|account manager list|manager list/i);
-    expect(clicked || page.url().includes('accounts-management')).toBe(true);
-    console.log('AM-09 PASSED: Account Manager list download action verified.');
+  test('AM-08: Bulk Upload opens an .xlsx file picker (not submitted)', async ({ page }) => {
+    await openAccountsManagement(page);
+    /** @type {string[]} */
+    const writes = [];
+    page.on('request', (request) => {
+      if (/\/api\//.test(request.url()) && !['GET', 'OPTIONS'].includes(request.method()) && !/management\/list|dashboard/i.test(request.url())) {
+        writes.push(`${request.method()} ${request.url()}`);
+      }
+    });
+
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser', { timeout: 20000 }),
+      clickWhenReady(page, toolbarButton(page, 'Bulk Upload')),
+    ]);
+    expect(chooser.isMultiple(), 'Bulk Upload accepts a single file.').toBe(false);
+    expect(await chooser.element().getAttribute('accept')).toBe('.xlsx');
+    // Deliberately no setFiles(): picking a file would submit a real bulk upload.
+    await page.waitForTimeout(2000);
+    expect(writes, 'Opening Bulk Upload must not send anything.').toEqual([]);
+    console.log('AM-08 PASSED: Bulk Upload opens an .xlsx file chooser; nothing was uploaded.');
   });
 
-  test('AM-10: Row Assign action process works after selecting an account manager', async ({ page }) => {
-    const selectedAccountManager = await selectDropdownOption(page, 'Account Manager', 0);
-    if (!selectedAccountManager) {
-      console.log('AM-10: Account Manager dropdown not selectable. Passing gracefully.');
-      return;
-    }
-
-    await runSearch(page);
-
-    const actionTarget = await findRowActionButton(page, 'Assign');
-    if (!actionTarget) {
-      console.log('AM-10: Assign action button not found. Passing gracefully.');
-      return;
-    }
-
-    console.log(`AM-10: Assign target row: ${actionTarget.rowText}`);
-    await actionTarget.actionButton.click({ force: true });
-    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-    await page.waitForTimeout(1500);
-
-    const feedbackState = await handleOptionalActionFeedback(page);
-    const table = page.locator('table, mat-table, .table-responsive').first();
-    await expect(table, 'Accounts table should remain visible after Assign action.').toBeVisible({ timeout: 15000 });
-
-    console.log(`AM-10 PASSED: Assign action process verified. State: ${feedbackState}`);
+  test('AM-09: Download Account Managers List exports an Excel file', async ({ page }) => {
+    await openAccountsManagement(page);
+    const [download] = await Promise.all([
+      page.waitForEvent('download', { timeout: 120000 }),
+      clickWhenReady(page, toolbarButton(page, 'Download Account Managers List')),
+    ]);
+    expect(download.suggestedFilename()).toMatch(/^TMDONE_Accounts_Managers.*\.xlsx$/i);
+    expect(await download.failure()).toBeNull();
+    console.log(`AM-09 PASSED: Downloaded ${download.suggestedFilename()}.`);
   });
 
-  test('AM-11: Row Delegate action process works after selecting an account manager', async ({ page }) => {
-    const selectedAccountManager = await selectDropdownOption(page, 'Account Manager', 0);
-    if (!selectedAccountManager) {
-      console.log('AM-11: Account Manager dropdown not selectable. Passing gracefully.');
+  test('AM-10: Assign round-trip on a test store (reassign, verify, restore, verify)', async ({ page }) => {
+    test.setTimeout(420000);
+    /** @type {string[]} */
+    const skippedStores = [];
+
+    for (const store of ROUND_TRIP_STORES) {
+      const row = await filterToStore(page, store);
+      const rowManager = await cellText(row, COL.manager);
+      const { dialog, assigned, managers } = await openAssignDialog(page, row);
+      const original = managers.find((m) => m.Id === assigned?.Id);
+      if (!original) {
+        skippedStores.push(`${store} (current manager "${rowManager}" / id ${assigned?.Id} is not assignable, so it could not be restored)`);
+        await closeDialog(page, dialog);
+        continue;
+      }
+      await expect(dialog.locator('mat-select').first(), 'Dialog should preselect the current manager.').toContainText(original.FullName.trim());
+
+      const replacement = managers.find((m) => m.Id !== original.Id && m.FullName.trim());
+      expect(replacement, 'A different assignable manager should exist.').toBeTruthy();
+      const newManager = /** @type {{ Id: string, FullName: string }} */ (replacement);
+      assignRoundTrip = {
+        store,
+        originalId: original.Id,
+        originalName: original.FullName.trim(),
+        newId: newManager.Id,
+        newName: newManager.FullName.trim(),
+        restored: false,
+      };
+      if (skippedStores.length) console.log(`AM-10: skipped ${skippedStores.join('; ')}`);
+      console.log(`AM-10: "${store}" currently "${rowManager}"; reassigning to "${assignRoundTrip.newName}".`);
+
+      // 1) Reassign to a different manager and verify.
+      await assignManagerInDialog(page, dialog, newManager);
+      const reassignedRow = await filterToStore(page, store);
+      await expect.poll(async () => cellText(reassignedRow, COL.manager), { message: 'Row should show the new manager.' }).toBe(assignRoundTrip.newName);
+      const afterReassign = await readAssignedManager(page, store);
+      expect(afterReassign.assigned?.Id, 'Store should now be assigned to the new manager.').toBe(newManager.Id);
+
+      // 2) Assign back to the original manager and verify the restore.
+      await restoreOriginalManager(page);
+      const restoredRow = await filterToStore(page, store);
+      await expect.poll(async () => cellText(restoredRow, COL.manager), { message: 'Row should show the original manager again.' }).toBe(assignRoundTrip.originalName);
+      console.log(`AM-10 PASSED: "${store}" reassigned to "${assignRoundTrip.newName}" and restored to "${assignRoundTrip.originalName}".`);
       return;
     }
 
-    await runSearch(page);
+    throw new Error(`No test store could be used for a safe Assign round-trip: ${skippedStores.join('; ')}`);
+  });
 
-    const actionTarget = await findRowActionButton(page, 'Delegate');
-    if (!actionTarget) {
-      console.log('AM-11: Delegate action button not found. Passing gracefully.');
-      return;
-    }
+  test('AM-11: Delegate dialog on the test store shows its fields and closes without delegating', async ({ page }) => {
+    const row = await filterToStore(page, DIALOG_STORE);
+    const tempManagerBefore = await cellText(row, COL.tempManager);
 
-    console.log(`AM-11: Delegate target row: ${actionTarget.rowText}`);
-    await actionTarget.actionButton.click({ force: true });
-    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-    await page.waitForTimeout(1500);
+    const managersPromise = page.waitForResponse((r) => /getAccountManagers/i.test(r.url()), { timeout: 45000 });
+    await clickWhenReady(page, row.locator('button').filter({ hasText: /^\s*Delegate\s*$/ }).first());
+    const managers = await (await managersPromise).json();
+    const dialog = activeDialog(page);
+    await expect(dialog, 'Delegate dialog should open.').toBeVisible({ timeout: 15000 });
+    await expect(dialog).toContainText('Select Temporary Account Manager');
+    await expect(dialog).toContainText('Select End date');
+    await expect(dialog.locator('mat-datepicker-toggle button, button[aria-label*="calendar" i]').first()).toBeVisible();
+    await expect(dialog.locator('button').filter({ hasText: /^\s*Delegate\s*$/ })).toBeVisible();
 
-    const feedbackState = await handleOptionalActionFeedback(page);
-    const table = page.locator('table, mat-table, .table-responsive').first();
-    await expect(table, 'Accounts table should remain visible after Delegate action.').toBeVisible({ timeout: 15000 });
+    // The temporary-manager dropdown lists the assignable managers.
+    await clickWhenReady(page, dialog.locator('mat-select').first());
+    await expect(page.locator('mat-option').filter({ hasText: managers[0].FullName.trim() }).first()).toBeVisible({ timeout: 15000 });
+    await page.locator('.cdk-overlay-transparent-backdrop, .cdk-overlay-backdrop').last().click();
+    await expect(page.locator('.cdk-overlay-pane mat-option').first()).toBeHidden({ timeout: 10000 });
+    await expect(dialog, 'Closing the dropdown must keep the dialog open.').toBeVisible();
 
-    console.log(`AM-11 PASSED: Delegate action process verified. State: ${feedbackState}`);
+    await closeDialog(page, dialog);
+    expect(await cellText(row, COL.tempManager), 'Closing without delegating must not change the row.').toBe(tempManagerBefore);
+    console.log('AM-11 PASSED: Delegate dialog verified and closed without delegating.');
+  });
+
+  test('AM-12: Bulk Assignment dialog shows its fields and closes without submitting', async ({ page }) => {
+    await openAccountsManagement(page);
+    await clickWhenReady(page, toolbarButton(page, 'Bulk Assignment'));
+    const dialog = activeDialog(page);
+    await expect(dialog, 'Bulk Assignment dialog should open.').toBeVisible({ timeout: 15000 });
+    await expect(dialog).toContainText('Select Account Manager');
+    await expect(dialog).toContainText('Select New Account Manager');
+    await expect(dialog.locator('mat-select')).toHaveCount(2);
+    await expect(dialog.locator('mat-checkbox').filter({ hasText: 'Temporary' })).toBeVisible();
+    await expect(dialog.locator('button').filter({ hasText: /^\s*Assign\s*$/ })).toBeVisible();
+    await closeDialog(page, dialog);
+    console.log('AM-12 PASSED: Bulk Assignment dialog verified and closed without submitting.');
   });
 });

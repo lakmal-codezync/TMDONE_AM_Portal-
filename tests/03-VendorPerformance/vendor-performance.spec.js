@@ -1,3 +1,17 @@
+// ============================================================
+// TMDone Admin Console - Vendor Performance (read-only analytics)
+// ============================================================
+// Every widget on this page is fed by a POST to /api/performance/*.
+// The tests capture those API responses and verify that the page
+// renders exactly the returned data (KPI cards, cancellation reasons,
+// customers, response time, vendor delay, order health, top selling
+// items/areas, the Order Performance table and its pagination), and
+// that the store filter, Today/Week/Month buttons, the custom date
+// range and the Search button send the right filter and re-render.
+//
+// Test data policy: store filter uses "Cafe Asiana". Nothing on this
+// page is created, edited or deleted.
+// ============================================================
 
 import { test, expect } from '@playwright/test';
 import { loginToApp, CREDENTIALS } from '../helpers/loginHelper.js';
@@ -5,666 +19,850 @@ import { loginToApp, CREDENTIALS } from '../helpers/loginHelper.js';
 // ===================== CONSTANTS ============================
 const BASE_URL = CREDENTIALS.baseUrl;
 const VP_URL = `${BASE_URL}/#/home/vendor-performance`;
+const TEST_STORE = 'Cafe Asiana';
+const PAGE_READY_TIMEOUT = 90000;
+// getCustomerInfo is very slow on the demo backend (~40 s unfiltered).
+// Measured up to ~3 min when the shared backend is busy.
+const SLOW_API_TIMEOUT = 240000;
 
-/** @param {import('@playwright/test').Page} page */
-async function openVendorPerformance(page) {
-  await loginToApp(page);
-  await page.goto(VP_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
-  await page.waitForLoadState('domcontentloaded', { timeout: 30000 }).catch(() => {});
-  await page.waitForTimeout(1500);
+// ===================== HELPERS ==============================
 
-  // The KPI/chart widgets on this page render asynchronously after the shell
-  // loads, with highly variable timing on the shared UAT environment. Wait
-  // for one of the first widgets to actually appear so tests that check page
-  // content don't race the load.
-  await page
-    .getByText(/Successful Orders/i)
-    .first()
-    .waitFor({ state: 'visible', timeout: 20000 })
-    .catch(() => {});
+const norm = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
+
+/** yyyy/MM/dd - the format the app sends in DateRange. */
+function fmtApiDate(date) {
+  return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`;
+}
+
+/** dd/MM/yyyy - the format the date-range inputs display. */
+function fmtInputDate(date) {
+  return `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}`;
+}
+
+function daysAgo(days) {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  return date;
+}
+
+/** DateRange computed by GlobalService.setDateRequest for the quick filters. */
+function expectedQuickRange(type) {
+  if (type === 'Today') return `${fmtApiDate(daysAgo(0))}-${fmtApiDate(daysAgo(0))}`;
+  if (type === 'Week') return `${fmtApiDate(daysAgo(7))}-${fmtApiDate(daysAgo(1))}`;
+  return `${fmtApiDate(daysAgo(30))}-${fmtApiDate(daysAgo(1))}`;
 }
 
 /**
- * The store dropdown is an ngx-mat-select-search: its first mat-option is a
- * disabled wrapper around the embedded search box, and typing into that
- * search box is unreliable via automation (its filtered results depend on a
- * live backend query, which can come back empty regardless of how the text
- * is entered). The real store list renders on its own shortly after the
- * panel opens, so select directly from that instead of relying on the
- * search box: prefer an option matching `preferredName`, but fall back to
- * any real (non-disabled) store so the test tolerates demo-data drift.
- * @param {import('@playwright/test').Page} page
- * @param {string} preferredName
- * @returns {Promise<string|null>} the store name actually selected, or null
+ * Calendar period label, e.g. "SEPT 2026" / "OCT 2026". The app's
+ * DateAdapter abbreviates some months with 4 letters (SEPT), so match
+ * the 3-letter month prefix followed by any letters and the year.
  */
-async function selectStoreByName(page, preferredName) {
-  const storeDropdown = page.locator('mat-select').first();
-  const dropdownVisible = await storeDropdown.isVisible().catch(() => false);
-  if (!dropdownVisible) return null;
+function calendarLabel(date) {
+  const month = date.toLocaleString('en-US', { month: 'short' }).toUpperCase().slice(0, 3);
+  return new RegExp(`^\\s*${month}[A-Z]*\\s+${date.getFullYear()}\\s*$`);
+}
 
-  await storeDropdown.click();
+/**
+ * Records every amportal /api/* response as {endpoint, status,
+ * requestBody, body}. Attach before loginToApp.
+ * @param {import('@playwright/test').Page} page
+ */
+function trackApi(page) {
+  const calls = [];
+  page.on('response', async (response) => {
+    const url = response.url();
+    if (!/\/api\/(performance|looksup)\//.test(url)) return;
+    const endpoint = url.split('?')[0].split('/').filter(Boolean).pop();
+    let requestBody = null;
+    try {
+      requestBody = response.request().postDataJSON();
+    } catch {
+      requestBody = null;
+    }
+    let body = null;
+    try {
+      body = await response.json();
+    } catch {
+      body = null;
+    }
+    calls.push({ endpoint, status: response.status(), requestBody, body });
+  });
 
-  const realOptions = page.locator('mat-option:not(.mat-option-disabled)');
-  await realOptions.first().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+  return {
+    calls,
+    count(endpoint) {
+      return calls.filter((call) => call.endpoint === endpoint).length;
+    },
+    async latest(endpoint, predicate = () => true, timeout = PAGE_READY_TIMEOUT) {
+      let match;
+      await expect
+        .poll(
+          () => {
+            match = [...calls].reverse().find((call) => call.endpoint === endpoint && predicate(call));
+            return Boolean(match);
+          },
+          { timeout, message: `Expected a response from /api/.../${endpoint}` }
+        )
+        .toBe(true);
+      expect(match.status, `${endpoint} should return HTTP 200`).toBe(200);
+      return match;
+    },
+  };
+}
 
-  const optionCount = await realOptions.count().catch(() => 0);
-  if (optionCount === 0) {
-    await page.keyboard.press('Escape').catch(() => {});
-    return null;
+/**
+ * Real click that tolerates the app's cycling spinner overlay.
+ * @param {import('@playwright/test').Locator} locator
+ */
+async function clickWhenReady(locator, attempts = 5) {
+  const page = locator.page();
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await page.locator('.ngx-spinner-overlay, app-page-loader').first().waitFor({ state: 'hidden', timeout: 15000 }).catch(() => {});
+    try {
+      await locator.click({ timeout: 8000 });
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+/** @param {import('@playwright/test').Page} page */
+async function openVendorPerformance(page) {
+  const api = trackApi(page);
+  await loginToApp(page);
+  await page.goto(VP_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
+  await expect(page.locator('h4.page-header', { hasText: 'Vendor Performance' })).toBeVisible({ timeout: PAGE_READY_TIMEOUT });
+  return api;
+}
+
+/**
+ * KPI card values for "Successful Orders" / "Failed Orders".
+ * @param {import('@playwright/test').Page} page
+ * @param {string} title
+ */
+async function readKpiCard(page, title) {
+  const card = page.locator('app-order-panel .plain-card').filter({ hasText: title });
+  const text = norm(await card.innerText());
+  const match = text.match(/(\d+) Order\(s\) ([\d.]+) OMR Compared to (.+?) (\d+)%/);
+  if (match) return { count: Number(match[1]), amount: match[2], prior: match[3], percentage: Number(match[4]) };
+  // Custom date ranges show no "Compared to" block.
+  const plain = text.match(/^\S.*? (\d+) Order\(s\) ([\d.]+) OMR$/);
+  return plain ? { count: Number(plain[1]), amount: plain[2] } : { raw: text };
+}
+
+/**
+ * Asserts both KPI cards show exactly the getOrderInfo response.
+ * Quick filters (Today/Week/Month) show a "Compared to <prior> N%"
+ * block with a trend arrow; a custom date range (DateReqType "Day")
+ * shows only the count and amount.
+ * @param {import('@playwright/test').Page} page
+ * @param {any} orderInfo
+ * @param {{compare?: boolean}} [options]
+ */
+async function expectKpisMatchApi(page, orderInfo, { compare = true } = {}) {
+  for (const [title, key] of [
+    ['Successful Orders', 'SuccessfulOrder'],
+    ['Failed Orders', 'FailedOrder'],
+  ]) {
+    const data = orderInfo[key];
+    await expect
+      .poll(() => readKpiCard(page, title), { timeout: 30000, message: `${title} card should match getOrderInfo.${key}` })
+      .toEqual(
+        compare
+          ? {
+              count: data.CurrentCount,
+              amount: Number(data.Current).toFixed(3),
+              prior: orderInfo.DataLabels.Prior,
+              percentage: Math.round(Math.abs(data.Percentage)),
+            }
+          : { count: data.CurrentCount, amount: Number(data.Current).toFixed(3) }
+      );
+    const card = page.locator('app-order-panel .plain-card').filter({ hasText: title });
+    if (compare) {
+      await expect(card.locator(`i.fa-level-${data.IsUp ? 'up' : 'down'}-alt`)).toHaveCount(1);
+    } else {
+      await expect(card.getByText('Compared to')).toHaveCount(0);
+      await expect(card.locator('i[class*="fa-level-"]')).toHaveCount(0);
+    }
+  }
+}
+
+/**
+ * Reads the Order Performance table rows.
+ * @param {import('@playwright/test').Page} page
+ */
+async function readOrderTable(page) {
+  return page.locator('app-order-performance table tbody tr').evaluateAll((rows) =>
+    rows.map((row) => Array.from(row.querySelectorAll('td')).map((cell) => (cell.textContent || '').replace(/\s+/g, ' ').trim()))
+  );
+}
+
+/**
+ * Asserts the Order Performance table renders exactly the given page of
+ * the performanceReport response.
+ * @param {import('@playwright/test').Page} page
+ * @param {any} report
+ */
+async function expectOrderTableMatchesApi(page, report) {
+  // The backend currently returns every matching order in Items (it does
+  // not page server-side); the table shows the PageNumber slice of
+  // PageSize rows. Handle both shapes.
+  const size = report.PageSize || 50;
+  const pageNo = report.PageNumber || 1;
+  const items = report.Items.length > size ? report.Items.slice((pageNo - 1) * size, pageNo * size) : report.Items;
+  const expected = items.map((item) => [
+    norm(item.StoreName),
+    item.OrderNo,
+    norm(item.Zone),
+    item.PaymentMethod,
+    Number(item.Amount).toFixed(3),
+    item.Status,
+    `${Number(item.VendorResponseTime).toFixed(2)} Min`,
+    `${Number(item.VendorDelay).toFixed(2)} Min`,
+    item.OrderHealth,
+  ]);
+  await expect
+    .poll(
+      async () =>
+        (await readOrderTable(page)).map((cells) => [cells[0], cells[2], cells[3], cells[4], cells[5], cells[6], cells[7], cells[8], cells[9]]),
+      { timeout: 30000, message: 'Order Performance table should render the performanceReport items' }
+    )
+    .toEqual(expected);
+  if (report.TotalItemCount > 0) {
+    await expect(page.locator('app-order-performance .results')).toHaveText(`Total ${report.TotalItemCount} results found`);
+  }
+}
+
+/**
+ * Picks a start/end day (both in the past) from the range picker and
+ * verifies the inputs show exactly those dates.
+ * @param {import('@playwright/test').Page} page
+ */
+async function pickDateRange(page, start, end) {
+  const now = new Date();
+  await clickWhenReady(page.locator('mat-datepicker-toggle button').first());
+  const calendar = page.locator('mat-calendar');
+  await expect(calendar).toBeVisible();
+
+  const monthsBetween = (from, to) => (to.getFullYear() - from.getFullYear()) * 12 + (to.getMonth() - from.getMonth());
+  for (let i = 0; i < monthsBetween(start, now); i += 1) {
+    await clickWhenReady(calendar.locator('.mat-calendar-previous-button'));
+  }
+  await expect(calendar.locator('.mat-calendar-period-button')).toHaveText(calendarLabel(start));
+  const day = (n) => calendar.locator('.mat-calendar-body-cell-content').filter({ hasText: new RegExp(`^\\s*${n}\\s*$`) }).first();
+  await clickWhenReady(day(start.getDate()));
+
+  for (let i = 0; i < monthsBetween(start, end); i += 1) {
+    await clickWhenReady(calendar.locator('.mat-calendar-next-button'));
+  }
+  await expect(calendar.locator('.mat-calendar-period-button')).toHaveText(calendarLabel(end));
+  await clickWhenReady(day(end.getDate()));
+  await expect(calendar).toBeHidden();
+
+  await expect(page.locator('input[formcontrolname="start"]')).toHaveValue(fmtInputDate(start));
+  await expect(page.locator('input[formcontrolname="end"]')).toHaveValue(fmtInputDate(end));
+}
+
+/**
+ * Selects TEST_STORE in the store multi-select using its search box and
+ * closes the panel. Returns the store's Id from the getStoreList lookup.
+ * @param {import('@playwright/test').Page} page
+ */
+async function selectTestStore(page, api) {
+  const storeList = await api.latest('getStoreList');
+  const store = storeList.body.find((item) => norm(item.Name) === TEST_STORE);
+  expect(store, `${TEST_STORE} should exist in the store lookup`).toBeTruthy();
+
+  await clickWhenReady(page.locator('mat-select[formcontrolname="storeArr"]'));
+  const panel = page.locator('.mat-select-panel');
+  await expect(panel).toBeVisible();
+  await expect(panel.locator('mat-option:not(.mat-option-disabled)').first()).toBeVisible({ timeout: 30000 });
+
+  const searchBox = panel.locator('input.mat-select-search-input:not(.mat-select-search-hidden)');
+  await searchBox.click({ force: true }); // sits inside an aria-disabled option wrapper
+  await searchBox.pressSequentially(TEST_STORE, { delay: 60 });
+
+  const realOptions = panel.locator('mat-option:not(.mat-option-disabled)');
+  await expect
+    .poll(async () => (await realOptions.allInnerTexts()).map(norm), { timeout: 20000 })
+    .toContain(TEST_STORE);
+  for (const text of (await realOptions.allInnerTexts()).map(norm)) {
+    expect(text.toLowerCase(), 'search should only leave matching stores').toContain(TEST_STORE.toLowerCase());
   }
 
-  const preferred = realOptions.filter({ hasText: preferredName }).first();
-  const preferredVisible = await preferred.isVisible().catch(() => false);
-  const target = preferredVisible ? preferred : realOptions.first();
-  const selectedName = (await target.innerText().catch(() => '')).trim();
+  const option = realOptions.filter({ hasText: new RegExp(`^\\s*${TEST_STORE}\\s*$`) }).first();
+  await clickWhenReady(option);
+  await expect(option).toHaveAttribute('aria-selected', 'true');
 
-  await target.click();
-
-  // This mat-select is multi-select (aria-multiselectable="true"), so it does
-  // not auto-close after picking an option — close it explicitly, otherwise
-  // its overlay keeps intercepting clicks on the rest of the page.
-  await page.keyboard.press('Escape').catch(() => {});
-  await page.locator('.cdk-overlay-backdrop').first().waitFor({ state: 'detached', timeout: 5000 }).catch(() => {});
-
-  return selectedName || null;
+  // Multi-select panels stay open: close via the transparent backdrop.
+  await page.locator('.cdk-overlay-transparent-backdrop').click();
+  await expect(panel).toBeHidden();
+  await expect(page.locator('mat-select[formcontrolname="storeArr"]')).toContainText(TEST_STORE);
+  return store.Id;
 }
 
 // ============================================================
 // VP-01: Page Load & URL Verification
 // ============================================================
-// Checks: Verifies that the Vendor Performance page loads
-// properly after login and the URL contains "vendor-performance".
-// ============================================================
 test('VP-01: Vendor Performance page loads and URL is correct', async ({ page }) => {
   await openVendorPerformance(page);
 
-  const currentUrl = page.url();
-  expect(currentUrl).toContain('vendor-performance');
+  expect(page.url()).toContain('#/home/vendor-performance');
+  for (const widget of [
+    'app-order-panel',
+    'app-cancellation',
+    'app-customers',
+    'app-average-response-time',
+    'app-vendor-delay',
+    'app-order-health',
+    'app-top-selling-items',
+    'app-top-selling-areas',
+    'app-order-performance',
+  ]) {
+    await expect(page.locator(widget), `${widget} should be rendered`).toBeVisible();
+  }
 
-  // Verify if the page body has content
-  const bodyText = await page.innerText('body');
-  expect(bodyText.length).toBeGreaterThan(100);
-
-  console.log('✅ VP-01 PASSED: URL verified:', currentUrl);
+  console.log('VP-01 PASSED: URL verified:', page.url());
 });
 
 // ============================================================
 // VP-02: Sidebar "Vendor Performance" Link
 // ============================================================
-// Checks: Verifies that the "Vendor Performance" link is visible
-// in the sidebar and the href is correct.
-// ============================================================
 test('VP-02: Sidebar shows Vendor Performance link correctly', async ({ page }) => {
-  await openVendorPerformance(page);
+  await loginToApp(page);
 
-  // Check the VP link in the sidebar (try multiple selectors)
-  const vpLink = page.locator('.sidebar a[href*="vendor-performance"], a:has-text("Vendor Performance")').first();
-  const linkVisible = await vpLink.isVisible().catch(() => false);
+  // Collapsible group toggles also carry the current route as href, so
+  // only the real top-level link is selected.
+  const vpLink = page.locator('#leftsidebar a.menu-top:not(.menu-toggle)[href="#/home/vendor-performance"]');
+  await expect(vpLink).toBeVisible({ timeout: PAGE_READY_TIMEOUT });
+  await expect(vpLink).toHaveText(/Vendor Performance/);
 
-  if (!linkVisible) {
-    console.log('⚠️ VP-02 INFO: Vendor Performance sidebar link not found in expected location.');
-    return;
-  }
+  await clickWhenReady(vpLink);
+  await page.waitForURL(/#\/home\/vendor-performance/, { timeout: 30000 });
+  await expect(page.locator('h4.page-header', { hasText: 'Vendor Performance' })).toBeVisible({ timeout: PAGE_READY_TIMEOUT });
+  await expect(vpLink.locator('xpath=..')).toHaveClass(/active/);
 
-  // Verify that the link text contains "Vendor Performance"
-  const linkText = (await vpLink.innerText().catch(() => '')).trim();
-  console.log(`ℹ️ Sidebar link text: "${linkText}"`);
-  expect(linkText.toLowerCase()).toContain('vendor');
-
-  console.log('✅ VP-02 PASSED: Vendor Performance sidebar link verified.');
+  console.log('VP-02 PASSED: Vendor Performance sidebar link navigates and is highlighted.');
 });
 
 // ============================================================
 // VP-03: Page Header / Title Verification
 // ============================================================
-// Checks: Verifies that the Vendor Performance page has a
-// visible page heading or title element.
-// ============================================================
 test('VP-03: Vendor Performance page title/header is visible', async ({ page }) => {
   await openVendorPerformance(page);
 
-  // Check for a page heading (h1, h2, h3 or a breadcrumb/title element)
-  const heading = page.locator('h1, h2, h3, .page-title, .breadcrumb, [class*="title"]').first();
-  const headingVisible = await heading.isVisible().catch(() => false);
+  const breadcrumb = page.locator('app-vendor-performance-panel ul.breadcrumb');
+  await expect(breadcrumb.locator('h4.page-header')).toHaveText('Vendor Performance');
+  await expect(page).toHaveTitle('TMDone-Console');
 
-  if (headingVisible) {
-    const headingText = (await heading.textContent().catch(() => '')).trim() || '';
-    console.log(`ℹ️ Page heading found: "${headingText}"`);
-    expect(headingText.length).toBeGreaterThan(0);
-  } else {
-    // Fallback: at minimum the page body should mention Vendor Performance
-    const bodyText = await page.innerText('body');
-    expect(bodyText.toLowerCase()).toContain('vendor');
-    console.log('ℹ️ No explicit heading found, but page body contains "vendor" keyword.');
-  }
-
-  console.log('✅ VP-03 PASSED: Page title/header verified.');
+  console.log('VP-03 PASSED: Page title/header verified.');
 });
 
 // ============================================================
-// VP-04: Filter Dropdowns (mat-select)
-// ============================================================
-// Checks: Verifies that the filter dropdowns (store filter,
-// date filters) are visible on the Vendor Performance page.
+// VP-04: Filter controls and default (Month) filter
 // ============================================================
 test('VP-04: Filter dropdown elements are visible', async ({ page }) => {
-  await openVendorPerformance(page);
+  const api = await openVendorPerformance(page);
 
-  // Check filter dropdowns (mat-select elements) - use broader selector
-  const matSelects = page.locator('mat-select');
-  const selectCount = await matSelects.count().catch(() => 0);
-  console.log(`ℹ️ mat-select elements found: ${selectCount}`);
+  await expect(page.locator('mat-select[formcontrolname="storeArr"]')).toBeVisible();
+  await expect(page.locator('mat-label', { hasText: 'Select a store' })).toBeVisible();
+  await expect(page.locator('mat-label', { hasText: 'Select a date range' })).toBeVisible();
+  for (const field of ['start', 'end']) {
+    const input = page.locator(`input[formcontrolname="${field}"]`);
+    await expect(input).toBeVisible();
+    await expect(input).toHaveAttribute('readonly', '');
+    await expect(input).toHaveValue('');
+  }
+  for (const name of ['Today', 'Week', 'Month']) {
+    await expect(page.locator('.btn-filter button', { hasText: name })).toBeVisible();
+  }
 
-  // Check text input fields (e.g., date text input)
-  const textInputs = page.locator('input.mat-input-element, input[type="text"]');
-  const inputCount = await textInputs.count().catch(() => 0);
-  console.log(`ℹ️ Input fields found: ${inputCount}`);
+  // Month is the default filter and the initial load uses its window for every widget.
+  await expect(page.locator('.btn-filter button', { hasText: 'Month' })).toHaveClass(/btn-primary/);
+  for (const endpoint of ['getOrderInfo', 'getCancellationReasons', 'getTopSellingItems', 'getTopSellingAreas', 'getAverageOrderStatusChangeTime']) {
+    const call = await api.latest(endpoint);
+    expect(call.requestBody).toMatchObject({ DateReqType: 'Month', DateRange: expectedQuickRange('Month'), StoreIds: [] });
+  }
+  const report = await api.latest('performanceReport');
+  expect(report.requestBody).toMatchObject({ PageNo: 1, DateRange: expectedQuickRange('Month'), StoreIds: [] });
 
-  // At least one filter control should exist
-  expect(selectCount + inputCount).toBeGreaterThan(0);
-
-  console.log('✅ VP-04 PASSED: Filter elements verified. Selects:', selectCount, 'Inputs:', inputCount);
+  console.log('VP-04 PASSED: Filter controls present and default Month window applied.');
 });
 
 // ============================================================
-// VP-05: Action Buttons (Search, Close)
-// ============================================================
-// Checks: Verifies that action buttons are visible on the page:
-//   - "search" icon button (search-btn class)
-//   - "close" icon button (close-btn class)
+// VP-05: Search button re-applies the current filter
 // ============================================================
 test('VP-05: Action buttons are present and visible', async ({ page }) => {
-  await openVendorPerformance(page);
+  const api = await openVendorPerformance(page);
+  await api.latest('getOrderInfo');
+  await api.latest('performanceReport');
 
-  // Search button (search-btn class)
-  const searchBtn = page.locator('button.search-btn, button:has(mat-icon:has-text("search"))').first();
-  const searchVisible = await searchBtn.isVisible().catch(() => false);
-  console.log(`ℹ️ Search button visible: ${searchVisible}`);
+  const searchBtn = page.locator('app-vendor-performance-panel button[mattooltip="Search"]');
+  await expect(searchBtn).toBeVisible();
 
-  // Close/clear button (close-btn class)
-  const closeBtn = page.locator('button.close-btn, button:has(mat-icon:has-text("close"))').first();
-  const closeVisible = await closeBtn.isVisible().catch(() => false);
-  console.log(`ℹ️ Close button visible: ${closeVisible}`);
+  const before = { info: api.count('getOrderInfo'), report: api.count('performanceReport') };
+  await clickWhenReady(searchBtn);
 
-  // Ensure at least one action button is visible (or just skip if none found)
-  if (!searchVisible && !closeVisible) {
-    console.log('ℹ️ VP-05 INFO: No action buttons found on this page.');
-  } else {
-    console.log('✅ VP-05 PASSED: Action buttons verified.');
-  }
+  const info = await api.latest('getOrderInfo', () => api.count('getOrderInfo') > before.info);
+  expect(info.requestBody).toMatchObject({ DateReqType: 'Month', DateRange: expectedQuickRange('Month'), StoreIds: [] });
+  const report = await api.latest('performanceReport', () => api.count('performanceReport') > before.report);
+  expect(report.requestBody.DateRange).toBe(expectedQuickRange('Month'));
+  await expectKpisMatchApi(page, info.body);
+
+  console.log('VP-05 PASSED: Search re-queried every widget with the active filter.');
 });
 
 // ============================================================
-// VP-06: Data Table / Content Area
-// ============================================================
-// Checks: Verifies that the main data area inside the
-// table-responsive div is visible.
-//   - div.table-responsive → main data container
+// VP-06: Order Performance table
 // ============================================================
 test('VP-06: Data table area is visible', async ({ page }) => {
-  await page.waitForTimeout(3000);
-  await openVendorPerformance(page);
+  const api = await openVendorPerformance(page);
+  const report = await api.latest('performanceReport');
 
-  // Main data area inside table-responsive div
-  const tableArea = page.locator('.table-responsive').first();
-  const tableVisible = await tableArea.isVisible().catch(() => false);
-  console.log(`ℹ️ Table area visible: ${tableVisible}`);
+  await expect(page.locator('app-order-performance h3')).toContainText('Order Performance');
+  const headers = (await page.locator('app-order-performance table thead th').allInnerTexts()).map(norm);
+  expect(headers).toEqual([
+    'Branch Name',
+    'Date/Time',
+    'Order ID',
+    'Delivery Zone',
+    'Payment Method',
+    'Amount',
+    'Status',
+    'Vendor Response Time',
+    'Vendor Delay',
+    'Vendor Performance',
+  ]);
+  expect(report.body.Items.length, 'demo data should have orders in the last 30 days').toBeGreaterThan(0);
+  await expectOrderTableMatchesApi(page, report.body);
 
-  // Fallback: Check any table or list container
-  const anyTable = page.locator('table, mat-table, .table-responsive').first();
-  const anyVisible = await anyTable.isVisible().catch(() => false);
-  console.log(`ℹ️ Any table/list visible: ${anyVisible}`);
-
-  if (!anyVisible) {
-    console.log('⚠️ VP-06 INFO: No data table found on this page.');
-  } else {
-    console.log('✅ VP-06 PASSED: Data area verified.');
-  }
+  console.log(`VP-06 PASSED: ${report.body.Items.length} order rows match the API (total ${report.body.TotalItemCount}).`);
 });
 
 // ============================================================
-// VP-07: Page Content Meaningful
+// VP-07: Top Cancellation Reasons
 // ============================================================
-// Checks: Ensures that the page body contains meaningful content
-// (prevents blank page errors) with a minimum of 200 characters.
-// ============================================================
-test('VP-07: Page has meaningful content (not blank)', async ({ page }) => {
-  await openVendorPerformance(page);
+test('VP-07: Top Cancellation Reasons table matches the API', async ({ page }) => {
+  const api = await openVendorPerformance(page);
+  const reasons = await api.latest('getCancellationReasons');
+  expect(Array.isArray(reasons.body)).toBe(true);
 
-  const bodyText = await page.innerText('body');
-  console.log(`ℹ️ Body text length: ${bodyText.length} chars`);
-  expect(bodyText.length).toBeGreaterThan(200);
+  const card = page.locator('app-cancellation');
+  await expect(card.locator('h3').first()).toContainText('Loss Due to Cancellation');
+  await expect(card.locator('canvas')).toBeVisible();
+  await expect(card.getByText('Top Cancellation Reasons')).toBeVisible();
 
-  // Check if sidebar and navbar are properly rendered
-  const sidebarExists = await page.locator('.sidebar').isVisible().catch(() => false);
-  const navbarExists = await page.locator('nav.navbar').isVisible().catch(() => false);
-  console.log(`ℹ️ Sidebar exists: ${sidebarExists}, Navbar exists: ${navbarExists}`);
+  const expected = reasons.body.map((item) => [norm(item.Reason), String(item.Count)]);
+  await expect
+    .poll(() =>
+      card.locator('table.cancellation-tbl tbody tr').evaluateAll((rows) =>
+        rows.map((row) => Array.from(row.querySelectorAll('td')).map((cell) => (cell.textContent || '').replace(/\s+/g, ' ').trim()))
+      )
+    )
+    .toEqual(expected);
 
-  console.log('✅ VP-07 PASSED: Page has meaningful content.');
+  console.log(`VP-07 PASSED: ${expected.length} cancellation reasons match the API.`);
 });
 
 // ============================================================
-// VP-08: Full-Page Screenshot (Visual Reference)
+// VP-08: Average Response Time and Vendor Delay
 // ============================================================
-// Checks: Captures a full-page screenshot of the vendor
-// performance page and verifies sidebar/navbar bounding boxes.
-// Output: Saved as test-results/vendor-performance-layout.png
+test('VP-08: Average Response Time and Vendor Delay cards match the API', async ({ page }) => {
+  const api = await openVendorPerformance(page);
+  const times = await api.latest('getAverageOrderStatusChangeTime');
+
+  const response = page.locator('app-average-response-time');
+  await expect(response).toContainText('Average Order Acceptance Time');
+  await expect(response.locator('h2')).toHaveText(new RegExp(`^\\s*${Number(times.body.AverageTimeToAccept).toFixed(2)}\\s*MIN\\s*$`));
+
+  const delay = page.locator('app-vendor-delay');
+  await expect(delay).toContainText('Average Delay Time');
+  await expect(delay.locator('h2')).toHaveText(new RegExp(`^\\s*${Number(times.body.PickupDelay.DelayTime).toFixed(2)}\\s*MIN\\s*$`));
+  await expect(delay.locator('ngx-gauge-value')).toHaveText(`${Math.abs(parseInt(String(times.body.PickupDelay.OrdersPiuckedonTimePercentage), 10))}%`);
+
+  console.log('VP-08 PASSED: Response time and vendor delay match the API.');
+});
+
 // ============================================================
-test('VP-08: Full page screenshot for visual reference', async ({ page }) => {
-  await openVendorPerformance(page);
+// VP-09: Top Selling Areas chart
+// ============================================================
+// (The chart's download/export menu is disabled in the app config -
+// toolbar.tools.download = false - so there is no export to test.)
+// ============================================================
+test('VP-09: Top Selling Areas chart plots the areas returned by the API', async ({ page }) => {
+  const api = await openVendorPerformance(page);
+  const areas = await api.latest('getTopSellingAreas');
+  expect(Array.isArray(areas.body)).toBe(true);
 
-  // Verify elements are visible before taking the screenshot
-  const sidebarVisible = await page.locator('.sidebar').isVisible().catch(() => false);
-  const navbarVisible = await page.locator('nav.navbar').isVisible().catch(() => false);
-
-  if (!sidebarVisible || !navbarVisible) {
-    console.log('⚠️ VP-08 INFO: Sidebar or navbar not visible, skipping screenshot.');
+  const card = page.locator('app-top-selling-areas');
+  await expect(card.locator('h3')).toContainText('Top Selling Areas');
+  if (areas.body.length === 0) {
+    await expect(card.locator('.apexcharts-bar-area')).toHaveCount(0);
+    console.log('VP-09 INFO: No areas for the default window.');
     return;
   }
 
-  // Full-page screenshot
-  await page.screenshot({
-    path: 'test-results/vendor-performance-layout.png',
-    fullPage: true,
-  });
-
-  // Sidebar bounding box verify
-  const sidebarBox = await page.locator('.sidebar').first().boundingBox();
-  if (sidebarBox) {
-    expect(sidebarBox.width).toBeGreaterThan(0);
-    expect(sidebarBox.height).toBeGreaterThan(100);
-    console.log('✅ VP-08 PASSED: Screenshot saved → test-results/vendor-performance-layout.png');
-  } else {
-    console.log('⚠️ VP-08 INFO: Sidebar has no bounding box.');
-  }
-});
-
-// ============================================================
-// VP-09: Chart Export Menu
-// ============================================================
-// Checks: This page has no data table/rows — its charts (Order
-// Health, Top Selling Items/Areas) expose a Highcharts export
-// icon instead of a plain "Export" button. Verifies that icon
-// opens a menu with Download SVG/PNG/CSV options.
-// ============================================================
-test('VP-09: Chart export menu offers Download SVG/PNG/CSV', async ({ page }) => {
-  await openVendorPerformance(page);
-
-  const exportIcon = page.locator('.highcharts-contextbutton, .highcharts-exporting-group').first();
-  const iconVisible = await exportIcon.isVisible({ timeout: 15000 }).catch(() => false);
-
-  if (!iconVisible) {
-    console.log('ℹ️ VP-09 INFO: Chart export icon not found.');
-    return;
+  await expect(card.locator('.apexcharts-canvas')).toBeVisible();
+  await expect(card.locator('.apexcharts-bar-area')).toHaveCount(areas.body.length, { timeout: 30000 });
+  const svgText = norm(await card.locator('svg').first().textContent());
+  for (const area of areas.body) {
+    expect(svgText, `chart should label area "${area.Area}"`).toContain(norm(area.Area));
+    expect(svgText, `chart should show count ${area.Count}`).toContain(String(area.Count));
   }
 
-  await exportIcon.click();
-  await page.waitForTimeout(800);
-
-  const menuItems = await page.locator('.highcharts-menu-item').allInnerTexts().catch(() => []);
-  console.log(`ℹ️ Export menu items: ${JSON.stringify(menuItems)}`);
-  await page.keyboard.press('Escape').catch(() => {});
-
-  expect(menuItems.some((t) => /Download (SVG|PNG|CSV)/i.test(t))).toBe(true);
-
-  console.log('✅ VP-09 PASSED: Chart export menu verified.');
+  console.log(`VP-09 PASSED: ${areas.body.length} areas plotted.`);
 });
 
 // ============================================================
 // VP-10: Date Range Selection (Today, Week, Month)
 // ============================================================
-// Checks: Verifies that the date range filter can be used to
-// select Today, Week, and Month options by clicking their buttons.
-// ============================================================
 test('VP-10: Date range filter allows selecting Today, Week, Month', async ({ page }) => {
-  await openVendorPerformance(page);
+  test.setTimeout(300000);
+  const api = await openVendorPerformance(page);
+  await api.latest('getOrderInfo');
 
-  let clickedCount = 0;
+  for (const type of ['Today', 'Week', 'Month']) {
+    const before = { info: api.count('getOrderInfo'), report: api.count('performanceReport') };
+    await clickWhenReady(page.locator('.btn-filter button', { hasText: type }));
 
-  // Click 'Today' button (with fallback)
-  const todayBtn = page.locator('button:has-text("Today"), text="Today"').first();
-  const todayExists = await todayBtn.isVisible().catch(() => false);
-  if (todayExists) {
-    await todayBtn.click();
-    await page.waitForTimeout(1000);
-    console.log('✅ Clicked "Today" button');
-    clickedCount++;
-  } else {
-    console.log('ℹ️ "Today" button not found.');
+    const info = await api.latest('getOrderInfo', (call) => call.requestBody?.DateReqType === type && api.count('getOrderInfo') > before.info);
+    expect(info.requestBody.DateRange, `${type} should query its own window`).toBe(expectedQuickRange(type));
+    const report = await api.latest('performanceReport', () => api.count('performanceReport') > before.report);
+    expect(report.requestBody.DateRange).toBe(expectedQuickRange(type));
+
+    for (const name of ['Today', 'Week', 'Month']) {
+      const button = page.locator('.btn-filter button', { hasText: name });
+      if (name === type) await expect(button).toHaveClass(/btn-primary/);
+      else await expect(button).not.toHaveClass(/btn-primary/);
+    }
+    await expectKpisMatchApi(page, info.body);
+    await expectOrderTableMatchesApi(page, report.body);
+    console.log(`  ${type}: ${info.requestBody.DateRange} -> ${info.body.SuccessfulOrder.CurrentCount} successful, ${report.body.TotalItemCount} rows`);
   }
 
-  // Click 'Week' button (with fallback)
-  const weekBtn = page.locator('button:has-text("Week"), text="Week"').first();
-  const weekExists = await weekBtn.isVisible().catch(() => false);
-  if (weekExists) {
-    await weekBtn.click();
-    await page.waitForTimeout(1000);
-    console.log('✅ Clicked "Week" button');
-    clickedCount++;
-  } else {
-    console.log('ℹ️ "Week" button not found.');
-  }
-
-  // Click 'Month' button (with fallback)
-  const monthBtn = page.locator('button:has-text("Month"), text="Month"').first();
-  const monthExists = await monthBtn.isVisible().catch(() => false);
-  if (monthExists) {
-    await monthBtn.click();
-    await page.waitForTimeout(1000);
-    console.log('✅ Clicked "Month" button');
-    clickedCount++;
-  } else {
-    console.log('ℹ️ "Month" button not found.');
-  }
-
-  if (clickedCount === 0) {
-    console.log('⚠️ VP-10 INFO: No date range buttons found on the page.');
-  } else {
-    console.log(`✅ VP-10 PASSED: Successfully clicked ${clickedCount} date range buttons.`);
-  }
+  console.log('VP-10 PASSED: Today/Week/Month filters query the right window and re-render.');
 });
 
 // ============================================================
-// VP-11: Custom Date Filter Selection and Search
-// ============================================================
-// Checks: Verifies that a user can interact with the date inputs
-// and trigger a search to filter the vendor performance data.
+// VP-11: Custom Date Range
 // ============================================================
 test('VP-11: Custom Date Filter works correctly', async ({ page }) => {
-  try {
-    await openVendorPerformance(page);
-  } catch (e) {
-    console.log('VP-11 SKIPPED: Unable to navigate to page.');
-    return;
+  test.setTimeout(240000);
+  const api = await openVendorPerformance(page);
+  await api.latest('getOrderInfo');
+
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const end = new Date(now.getFullYear(), now.getMonth() - 1, 10);
+  const expectedRange = `${fmtApiDate(start)}-${fmtApiDate(end)}`;
+
+  let orderInfoRequests = 0;
+  page.on('request', (request) => {
+    if (request.url().includes('/api/performance/getOrderInfo')) orderInfoRequests += 1;
+  });
+  const infoResponsesBefore = api.count('getOrderInfo');
+
+  await pickDateRange(page, start, end);
+
+  const info = await api.latest('getOrderInfo', (call) => call.requestBody?.DateRange === expectedRange);
+  expect(info.requestBody.DateReqType).toBe('Day');
+
+  // Wait until every getOrderInfo request fired by the date picker has
+  // been answered, then make sure the custom-range response is the one
+  // the KPI cards ended up with (i.e. nothing stale arrived after it).
+  await expect
+    .poll(() => api.count('getOrderInfo') - infoResponsesBefore, { timeout: 150000 })
+    .toBeGreaterThanOrEqual(orderInfoRequests);
+  const infoCalls = api.calls.filter((call) => call.endpoint === 'getOrderInfo');
+  const lastInfo = infoCalls[infoCalls.length - 1];
+  expect(
+    lastInfo.requestBody?.DateRange,
+    `PRODUCT BUG (race): picking the start date fires getOrderInfo with the previous ${lastInfo.requestBody?.DateReqType} ` +
+      `filter (${lastInfo.requestBody?.DateRange}); that response arrived after the custom-range (${expectedRange}) response ` +
+      'and overwrote the Successful/Failed Orders cards, so they show data for a different period than the selected range.'
+  ).toBe(expectedRange);
+  const report = await api.latest('performanceReport', (call) => call.requestBody?.DateRange === expectedRange);
+  for (const name of ['Today', 'Week', 'Month']) {
+    await expect(page.locator('.btn-filter button', { hasText: name })).not.toHaveClass(/btn-primary/);
+  }
+  await expectKpisMatchApi(page, info.body, { compare: false });
+  await expectOrderTableMatchesApi(page, report.body);
+
+  // Every listed order was placed inside the chosen window. The Date/Time
+  // column is the order's completion time; the range filters on when the
+  // order was placed (= Date - TotalTimeToDeliver minutes), so e.g. an
+  // order placed on the 10th and delivered 4 days later is still listed.
+  const windowStart = start.getTime();
+  const windowEnd = new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1).getTime();
+  expect(report.body.Items.length, `demo data should have orders in ${expectedRange}`).toBeGreaterThan(0);
+  for (const item of report.body.Items) {
+    const placedAt = new Date(item.Date).getTime() - Number(item.TotalTimeToDeliver || 0) * 60000;
+    expect(
+      placedAt >= windowStart && placedAt < windowEnd,
+      `order ${item.OrderNo} (completed ${item.Date}, placed ~${new Date(placedAt).toISOString()}) should be within ${expectedRange}`
+    ).toBe(true);
   }
 
-  // Locate the text inputs (usually for Start Date and End Date)
-  const dateInputs = page.locator('input.mat-input-element, input[type="date"], input[type="text"]');
-  const inputCount = await dateInputs.count().catch(() => 0);
-  
-  if (inputCount === 0) {
-    console.log('⚠️ VP-11 INFO: No date input fields found.');
-    console.log('✅ VP-11 PASSED: Date filter interaction verified.');
-    return;
-  }
-
-  const firstDateInput = dateInputs.first();
-  const isVisible = await firstDateInput.isVisible().catch(() => false);
-
-  if (!isVisible) {
-    console.log('⚠️ VP-11 INFO: Date input not visible.');
-    console.log('✅ VP-11 PASSED: Date filter interaction verified.');
-    return;
-  }
-
-  // Since the input is readonly, click to open the calendar dialog
-  await firstDateInput.click().catch(() => {});
-  await page.waitForTimeout(800);
-
-  // Select the 10th day as Start Date
-  const day10 = page.locator('.mat-calendar-body-cell-content').filter({ hasText: /^10$/ }).first();
-  const day10Visible = await day10.isVisible().catch(() => false);
-
-  if (day10Visible) {
-    await day10.click({ force: true }).catch(() => {});
-    await page.waitForTimeout(800);
-    console.log('✅ Selected day 10 for date range');
-  } else {
-    await page.keyboard.press('Escape').catch(() => {});
-    console.log('ℹ️ Calendar not available');
-  }
-
-  // Click the Search button to apply the filter (optional)
-  const searchBtn = page.locator('button.search-btn, button:has(mat-icon:has-text("search"))').first();
-  if (await searchBtn.isVisible().catch(() => false)) {
-    await searchBtn.click().catch(() => {});
-    await page.waitForTimeout(1500);
-    console.log('✅ Clicked Search button after date filter.');
-  }
-
-  console.log('✅ VP-11 PASSED: Custom Date filter verified.');
+  console.log(`VP-11 PASSED: Custom range ${expectedRange} applied (${report.body.TotalItemCount} orders).`);
 });
 
 // ============================================================
-// VP-12: Store Selection and Filter Search
-// ============================================================
-// Checks: Verifies that a user can search for and select a specific
-// store from the dropdown and trigger a search.
+// VP-12: Store selection via the search box, applied by Search
 // ============================================================
 test('VP-12: Store selection search feature works correctly', async ({ page }) => {
-  await openVendorPerformance(page);
+  test.setTimeout(240000);
+  const api = await openVendorPerformance(page);
+  await api.latest('performanceReport');
 
-  const selectedStore = await selectStoreByName(page, 'Cafe Asiana');
-  if (!selectedStore) {
-    console.log('⚠️ VP-12 INFO: No selectable store options available.');
-    return;
+  const storeId = await selectTestStore(page, api);
+
+  // Selecting a store alone does not re-query: the Search button applies it.
+  const before = api.count('performanceReport');
+  await page.waitForTimeout(3000);
+  expect(api.count('performanceReport'), 'store selection should wait for Search').toBe(before);
+
+  await clickWhenReady(page.locator('app-vendor-performance-panel button[mattooltip="Search"]'));
+  const report = await api.latest('performanceReport', (call) => JSON.stringify(call.requestBody?.StoreIds) === JSON.stringify([storeId]));
+  expect(report.requestBody.DateRange).toBe(expectedQuickRange('Month'));
+  for (const endpoint of ['getOrderInfo', 'getCancellationReasons', 'getTopSellingItems', 'getTopSellingAreas']) {
+    await api.latest(endpoint, (call) => JSON.stringify(call.requestBody?.StoreIds) === JSON.stringify([storeId]));
   }
-  console.log(`✅ Selected store: ${selectedStore}`);
 
-  // Click the Search button to apply the store filter (optional)
-  const searchBtn = page.locator('button.search-btn, button:has(mat-icon:has-text("search"))').first();
-  if (await searchBtn.isVisible().catch(() => false)) {
-    await searchBtn.click();
-    await page.waitForTimeout(2000);
-    console.log('✅ Clicked Search button after store selection.');
+  await expectOrderTableMatchesApi(page, report.body);
+  for (const cells of await readOrderTable(page)) {
+    expect(cells[0], 'every order row should belong to the selected store').toBe(TEST_STORE);
   }
 
-  console.log('✅ VP-12 PASSED: Store selection verified.');
+  console.log(`VP-12 PASSED: ${TEST_STORE} (${storeId}) filter applied - ${report.body.TotalItemCount} orders.`);
 });
 
 // ============================================================
-// VP-13: Pagination Verification (Next & Previous)
+// VP-13: Order Performance pagination (Next & Previous)
 // ============================================================
-// Checks: Does the pagination work for the data table?
-//   - Clicks the "Next" pagination button if available
-//   - Clicks the "Previous" pagination button if available
+// Uses a fixed historical window (1-10 Aug 2026, ~10k orders) so the
+// report has many 50-row pages. Wide windows (6 months, ~160k orders)
+// make performanceReport take well over a minute, so they are avoided.
 // ============================================================
 test('VP-13: Pagination - Next and Previous buttons work correctly', async ({ page }) => {
-  try {
-    await openVendorPerformance(page);
-  } catch (e) {
-    console.log('VP-13 SKIPPED: Unable to open Vendor Performance page.');
-    return;
+  test.setTimeout(300000);
+  const api = await openVendorPerformance(page);
+  await api.latest('performanceReport');
+
+  const start = new Date(2026, 7, 1);
+  const end = new Date(2026, 7, 10);
+  const expectedRange = `${fmtApiDate(start)}-${fmtApiDate(end)}`;
+  await pickDateRange(page, start, end);
+
+  const page1 = await api.latest('performanceReport', (call) => call.requestBody?.DateRange === expectedRange);
+  expect(page1.requestBody.PageNo).toBe(1);
+  expect(
+    page1.body.TotalItemCount,
+    `pagination needs more than ${page1.body.PageSize} orders in ${expectedRange}; demo data has ${page1.body.TotalItemCount}`
+  ).toBeGreaterThan(page1.body.PageSize);
+  await expectOrderTableMatchesApi(page, page1.body);
+  const page1Ids = (await readOrderTable(page)).map((cells) => cells[2]);
+  expect(page1Ids).toHaveLength(page1.body.PageSize);
+
+  const pager = page.locator('app-order-performance ul.ngx-pagination');
+  await expect(pager.locator('li.current')).toContainText('1');
+  await expect(pager.locator('li.pagination-previous')).toHaveClass(/disabled/);
+
+  // Next -> page 2
+  await clickWhenReady(pager.locator('li.pagination-next a'));
+  const page2 = await api.latest('performanceReport', (call) => call.requestBody?.DateRange === expectedRange && call.requestBody?.PageNo === 2);
+  await expect(pager.locator('li.current')).toContainText('2');
+  await expectOrderTableMatchesApi(page, page2.body);
+  const page2Ids = (await readOrderTable(page)).map((cells) => cells[2]);
+  expect(page2Ids).toHaveLength(page2.body.PageSize);
+  for (const id of page2Ids) {
+    expect(page1Ids, 'page 2 should not repeat page 1 orders').not.toContain(id);
   }
 
-  // Step 1: Find mat-paginator on the current view
-  const allPaginators = page.locator('mat-paginator');
-  const paginatorCount = await allPaginators.count().catch(() => 0);
-  console.log(`ℹ️ Found ${paginatorCount} paginator(s) on the page.`);
+  // Previous -> back to page 1
+  const before = api.count('performanceReport');
+  await clickWhenReady(pager.locator('li.pagination-previous a'));
+  const back = await api.latest('performanceReport', (call) => call.requestBody?.PageNo === 1 && api.count('performanceReport') > before);
+  await expect(pager.locator('li.current')).toContainText('1');
+  await expectOrderTableMatchesApi(page, back.body);
 
-  if (paginatorCount === 0) {
-    console.log('⚠️ VP-13 INFO: No pagination found on this page.');
-    console.log('✅ VP-13 PASSED: Pagination check completed.');
-    return;
-  }
-
-  // Use the first visible paginator
-  const paginator = allPaginators.first();
-
-  // Step 2: Locate Next/Previous buttons
-  const nextBtn = paginator.locator('button[aria-label*="Next"], button.mat-paginator-navigation-next, button[title*="Next"]').first();
-  const prevBtn = paginator.locator('button[aria-label*="Previous"], button.mat-paginator-navigation-previous, button[title*="Previous"]').first();
-  const rangeLabel = paginator.locator('.mat-paginator-range-label, .mat-mdc-paginator-range-label').first();
-
-  const isNextVisible = await nextBtn.isVisible().catch(() => false);
-  const isNextEnabled = await nextBtn.isEnabled().catch(() => false);
-
-  if (isNextVisible && isNextEnabled) {
-    try {
-      const labelBefore = (await rangeLabel.textContent().catch(() => '')).trim() || '';
-      console.log(`ℹ️ Range label before Next: "${labelBefore}"`);
-
-      await nextBtn.click();
-      await page.waitForTimeout(1500);
-
-      const labelAfter = (await rangeLabel.textContent().catch(() => '')).trim() || '';
-      console.log(`ℹ️ Range label after Next: "${labelAfter}"`);
-
-      if (labelAfter !== labelBefore) {
-        console.log('✅ Next button clicked successfully');
-        
-        const isPrevEnabled = await prevBtn.isEnabled().catch(() => false);
-        if (isPrevEnabled) {
-          await prevBtn.click();
-          await page.waitForTimeout(1500);
-          console.log('✅ Previous button clicked successfully');
-        }
-      }
-    } catch (e) {
-      console.log(`ℹ️ Error during pagination interaction: ${e.message}`);
-    }
-    console.log('✅ VP-13 PASSED: Pagination buttons verified.');
-  } else if (isNextVisible) {
-    console.log('⚠️ VP-13 INFO: Next button found but disabled – data fits in a single page.');
-    console.log('✅ VP-13 PASSED: Pagination check completed.');
-  } else {
-    console.log('⚠️ VP-13 INFO: Next button not visible – likely no pagination needed.');
-    console.log('✅ VP-13 PASSED: Pagination check completed.');
-  }
+  console.log(`VP-13 PASSED: ${page1.body.TotalItemCount} orders paged (1 -> 2 -> 1).`);
 });
 
 // ============================================================
 // VP-14: Successful & Failed Orders KPI Cards
 // ============================================================
-// Checks: The two headline KPI cards show order counts and OMR
-// values (the core metrics this page exists to report).
-// ============================================================
 test('VP-14: Successful and Failed Orders KPI cards display order counts and OMR values', async ({ page }) => {
-  await openVendorPerformance(page);
+  const api = await openVendorPerformance(page);
+  const info = await api.latest('getOrderInfo');
+  expect(typeof info.body?.SuccessfulOrder?.CurrentCount).toBe('number');
+  expect(typeof info.body?.FailedOrder?.CurrentCount).toBe('number');
 
-  const successfulCard = page.getByText(/Successful Orders/i).first();
-  await expect(successfulCard).toBeVisible({ timeout: 15000 });
+  await expectKpisMatchApi(page, info.body);
 
-  const failedCard = page.getByText(/Failed Orders/i).first();
-  await expect(failedCard).toBeVisible({ timeout: 15000 });
-
-  // The KPI labels render before their numeric values finish loading via a
-  // separate async call, so poll instead of reading body text right away.
-  await expect
-    .poll(async () => page.locator('body').innerText(), { timeout: 20000 })
-    .toMatch(/Successful Orders[\s\S]{0,50}\d+/i);
-
-  const bodyText = await page.locator('body').innerText();
-  expect(bodyText).toMatch(/Failed Orders[\s\S]{0,50}\d+/i);
-  expect(bodyText).toMatch(/OMR/);
-
-  console.log('✅ VP-14 PASSED: Successful and Failed Orders KPI cards verified.');
+  console.log(
+    `VP-14 PASSED: Successful ${info.body.SuccessfulOrder.CurrentCount} / Failed ${info.body.FailedOrder.CurrentCount} match the API.`
+  );
 });
 
 // ============================================================
-// VP-15: Additional Performance Metrics
-// ============================================================
-// Checks: Secondary metrics (Loss Due to Cancellation, Customers,
-// Average Response Time, Vendor Delay) are present on the page.
+// VP-15: Customers breakdown
 // ============================================================
 test('VP-15: Additional performance metrics are visible', async ({ page }) => {
-  await openVendorPerformance(page);
+  test.setTimeout(360000);
+  const api = await openVendorPerformance(page);
+  const customers = await api.latest('getCustomerInfo', () => true, SLOW_API_TIMEOUT);
+  const info = customers.body;
+  expect(typeof info?.NewCustomersCount, 'getCustomerInfo should return counts').toBe('number');
 
-  const metrics = ['Loss Due to Cancellation', 'Customers', 'Average Response Time', 'Vendor Delay'];
+  const card = page.locator('app-customers');
+  await expect(card.locator('app-loader')).toHaveCount(0, { timeout: 30000 });
+  const text = norm(await card.innerText());
+  const pct = (value) => Math.abs(parseInt(String(value), 10));
+  expect(text).toMatch(new RegExp(`Returning Customers ${info.ReturningCustomersCount} ${pct(info.ReturningCustomersPercentage)}%`));
+  expect(text).toMatch(new RegExp(`Regained Customers ${info.RegainedCustomersCount} ${pct(info.RegainedCustomersPercentage)}%`));
+  expect(text).toMatch(new RegExp(`New Customers ${info.NewCustomersCount} ${pct(info.NewCustomersPercentage)}%`));
 
-  // These KPI widgets render asynchronously after the initial page load, so
-  // poll for the body text instead of checking isVisible() once — isVisible()
-  // reports the current state immediately and does not wait/retry.
-  await expect
-    .poll(
-      async () => {
-        const bodyText = await page.locator('body').innerText();
-        return metrics.some((m) => bodyText.toLowerCase().includes(m.toLowerCase()));
-      },
-      { timeout: 20000, message: 'At least one additional performance metric should be visible' }
-    )
-    .toBe(true);
-
-  const bodyText = await page.locator('body').innerText();
-  for (const metric of metrics) {
-    const found = bodyText.toLowerCase().includes(metric.toLowerCase());
-    console.log(`  ${found ? '✅' : 'ℹ️'} "${metric}" visible: ${found}`);
-  }
-
-  console.log('✅ VP-15 PASSED: Additional performance metrics verified.');
+  console.log(
+    `VP-15 PASSED: Customers new ${info.NewCustomersCount} / returning ${info.ReturningCustomersCount} / regained ${info.RegainedCustomersCount} match the API.`
+  );
 });
 
 // ============================================================
 // VP-16: Order Health Chart
 // ============================================================
-// Checks: The Order Health donut chart shows the Excellent/Good/
-// Poor breakdown with percentage values.
-// ============================================================
 test('VP-16: Order Health chart shows Excellent/Good/Poor breakdown', async ({ page }) => {
-  await openVendorPerformance(page);
+  const api = await openVendorPerformance(page);
+  const times = await api.latest('getAverageOrderStatusChangeTime');
+  const data = times.body.OrderHealth.OrderHealthdoughnutChartData;
+  expect(data).toHaveLength(3);
 
-  const orderHealthLabel = page.getByText(/Order Health/i).first();
-  await expect(orderHealthLabel).toBeVisible({ timeout: 20000 });
-
-  // The Excellent/Good/Poor breakdown renders after the chart's own async
-  // data load, which can lag behind the "Order Health" label itself.
+  const card = page.locator('app-order-health');
+  await expect(card.locator('h3')).toContainText('Order Health');
+  await expect(card.locator('.apexcharts-canvas')).toBeVisible({ timeout: 30000 });
+  const svgText = norm(await card.locator('svg').first().textContent());
+  for (const category of ['Excellent', 'Good', 'Poor']) {
+    expect(svgText).toContain(category);
+  }
   await expect
-    .poll(
-      async () => {
-        const bodyText = await page.locator('body').innerText();
-        return /Excellent/i.test(bodyText) && /Good/i.test(bodyText) && /Poor/i.test(bodyText);
-      },
-      { timeout: 20000, message: 'Order Health chart should show Excellent/Good/Poor categories' }
-    )
-    .toBe(true);
+    .poll(async () => (await card.locator('.apexcharts-datalabel').allTextContents()).map(norm))
+    .toEqual(data.map((value) => `${value}%`));
 
-  const bodyText = await page.locator('body').innerText();
-  expect(/\d{1,3}%/.test(bodyText)).toBe(true);
-
-  console.log('✅ VP-16 PASSED: Order Health chart breakdown verified.');
+  console.log(`VP-16 PASSED: Order Health ${data.join('/')}% matches the API.`);
 });
 
 // ============================================================
-// VP-17: Top Selling Items / Areas Tab Switch
+// VP-17: Top Selling Items table
 // ============================================================
-// Checks: Both tabs on the top-selling chart are present and
-// clickable without breaking the page.
-// ============================================================
-test('VP-17: Top Selling Items and Top Selling Areas tabs switch correctly', async ({ page }) => {
-  await openVendorPerformance(page);
+test('VP-17: Top Selling Items table matches the API', async ({ page }) => {
+  const api = await openVendorPerformance(page);
+  const items = await api.latest('getTopSellingItems');
+  expect(Array.isArray(items.body)).toBe(true);
 
-  const itemsTab = page.getByText(/Top Selling Items/i).first();
-  const areasTab = page.getByText(/Top Selling Areas/i).first();
+  const card = page.locator('app-top-selling-items');
+  await expect(card.locator('h3')).toContainText('Top Selling Items');
+  const expected = items.body.map((item) => [norm(item.Name), String(item.Count)]);
+  await expect
+    .poll(() =>
+      card.locator('table tbody tr').evaluateAll((rows) =>
+        rows.map((row) => Array.from(row.querySelectorAll('td')).map((cell) => (cell.textContent || '').replace(/\s+/g, ' ').trim()))
+      )
+    )
+    .toEqual(expected);
+  const counts = items.body.map((item) => item.Count);
+  expect(counts, 'items are ranked by count').toEqual([...counts].sort((a, b) => b - a));
 
-  await expect(areasTab).toBeVisible({ timeout: 25000 });
-  await expect(itemsTab).toBeVisible({ timeout: 25000 });
-
-  await itemsTab.click().catch(() => {});
-  await page.waitForTimeout(1000);
-  console.log('ℹ️ Clicked "Top Selling Items" tab.');
-
-  await areasTab.click().catch(() => {});
-  await page.waitForTimeout(1000);
-  console.log('ℹ️ Clicked "Top Selling Areas" tab.');
-
-  console.log('✅ VP-17 PASSED: Top Selling tab switch verified.');
+  console.log(`VP-17 PASSED: ${expected.length} top selling items match the API.`);
 });
 
 // ============================================================
 // VP-18: Store Filter Refreshes KPI View
 // ============================================================
-// Checks: Selecting a store and searching keeps the KPI view
-// populated (no blank/error state after filtering).
-// ============================================================
 test('VP-18: Selecting a store and searching refreshes the KPI view without errors', async ({ page }) => {
-  await openVendorPerformance(page);
+  test.setTimeout(240000);
+  const api = await openVendorPerformance(page);
+  const allStores = await api.latest('getOrderInfo');
 
-  const selectedStore = await selectStoreByName(page, 'Cafe Asiana');
-  if (!selectedStore) {
-    console.log('⚠️ VP-18 INFO: No selectable store options available.');
-    return;
-  }
-  console.log(`ℹ️ Selected store: ${selectedStore}`);
+  const storeId = await selectTestStore(page, api);
+  await clickWhenReady(page.locator('app-vendor-performance-panel button[mattooltip="Search"]'));
 
-  const searchBtn = page.locator('button.search-btn, button:has(mat-icon:has-text("search"))').first();
-  if (await searchBtn.isVisible().catch(() => false)) {
-    await searchBtn.click({ timeout: 10000 });
-    await page.waitForLoadState('networkidle').catch(() => {});
-    await page.waitForTimeout(1500);
-  }
+  const sameStore = (call) => JSON.stringify(call.requestBody?.StoreIds) === JSON.stringify([storeId]);
+  const info = await api.latest('getOrderInfo', sameStore);
+  await expectKpisMatchApi(page, info.body);
+  expect(
+    info.body.SuccessfulOrder.CurrentCount,
+    'a single store cannot have more successful orders than all stores combined'
+  ).toBeLessThanOrEqual(allStores.body.SuccessfulOrder.CurrentCount);
 
-  const bodyAfter = await page.locator('body').innerText();
-  expect(bodyAfter.length).toBeGreaterThan(200);
+  const items = await api.latest('getTopSellingItems', sameStore);
+  await expect
+    .poll(async () => (await page.locator('app-top-selling-items table tbody tr td:first-child').allTextContents()).map(norm))
+    .toEqual(items.body.map((item) => norm(item.Name)));
 
-  console.log('✅ VP-18 PASSED: Store filter applied without breaking the KPI view.');
+  console.log(`VP-18 PASSED: KPIs refreshed for ${TEST_STORE}: ${info.body.SuccessfulOrder.CurrentCount} successful orders.`);
+});
+
+// ============================================================
+// VP-19: Loss Due to Cancellation chart follows the API
+// ============================================================
+// The card is a Chart.js line chart fed by getCancellationLossChart.
+// Verifies the chart is bound to the API's day labels and is actually
+// drawn, that the header trend arrow follows CancellationLossData.IsUp,
+// and that the Week filter re-queries the chart with the Week window
+// and re-binds it to the new labels.
+// ============================================================
+async function expectLossChartMatchesApi(page, lossBody) {
+  const card = page.locator('app-cancellation');
+  const canvas = card.locator('canvas');
+  await expect(canvas).toBeVisible();
+  await expect(canvas).toHaveAttribute('ng-reflect-chart-type', 'line');
+
+  const labels = lossBody.CurrentDataLabels;
+  expect(Array.isArray(labels) && labels.length > 0, 'getCancellationLossChart should return day labels').toBe(true);
+  // Angular truncates reflected bindings to 30 characters.
+  const reflected = labels.join(',').slice(0, 30);
+  await expect.poll(() => canvas.getAttribute('ng-reflect-labels'), { timeout: 30000 }).toBe(reflected);
+
+  const series = lossBody.CancellationLossData.CancellationLossLineChartData[0].Data;
+  expect(series, 'one loss value per day label').toHaveLength(labels.length);
+
+  // The canvas has really been painted (not an empty chart area).
+  await expect
+    .poll(() =>
+      canvas.evaluate((el) => {
+        const { data } = el.getContext('2d').getImageData(0, 0, el.width, el.height);
+        let painted = 0;
+        for (let i = 3; i < data.length; i += 4) if (data[i] > 0) painted += 1;
+        return painted;
+      })
+    )
+    .toBeGreaterThan(500);
+
+  const arrow = lossBody.CancellationLossData.IsUp ? 'up' : 'down';
+  await expect(card.locator(`h3 i.fa-level-${arrow}-alt`)).toHaveCount(1);
+}
+
+test('VP-19: Loss Due to Cancellation chart is bound to the API data and follows the filter', async ({ page }) => {
+  test.setTimeout(240000);
+  const api = await openVendorPerformance(page);
+
+  const month = await api.latest('getCancellationLossChart');
+  expect(month.requestBody).toMatchObject({ DateReqType: 'Month', DateRange: expectedQuickRange('Month'), StoreIds: [] });
+  await expect(page.locator('app-cancellation h3').first()).toContainText('Loss Due to Cancellation');
+  await expectLossChartMatchesApi(page, month.body);
+
+  const before = api.count('getCancellationLossChart');
+  await clickWhenReady(page.locator('.btn-filter button', { hasText: 'Week' }));
+  const week = await api.latest(
+    'getCancellationLossChart',
+    (call) => call.requestBody?.DateReqType === 'Week' && api.count('getCancellationLossChart') > before
+  );
+  expect(week.requestBody.DateRange).toBe(expectedQuickRange('Week'));
+  await expectLossChartMatchesApi(page, week.body);
+
+  console.log(
+    `VP-19 PASSED: loss chart bound to ${month.body.CurrentDataLabels.length} (Month) and ${week.body.CurrentDataLabels.length} (Week) day labels from the API.`
+  );
 });

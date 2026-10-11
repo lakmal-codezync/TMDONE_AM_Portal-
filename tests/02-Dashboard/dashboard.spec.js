@@ -1,4 +1,16 @@
-
+// ============================================================
+// TMDone Admin Console - Dashboard (read-only analytics page)
+// ============================================================
+// Every widget on this page is fed by a POST to /api/dashboard/*.
+// The tests capture those API responses and verify that what the
+// page renders (counts, status breakdown, notification lists, the
+// Top 30 lists) is exactly the data the backend returned, and that
+// the Today / Week / Month / custom-range / Search filters send the
+// correct date window and re-render the lists with the new data.
+//
+// Nothing on this page is created, edited or deleted. The Change
+// Password dialog is opened and cancelled without typing into it.
+// ============================================================
 
 import { test, expect } from '@playwright/test';
 import { loginToApp, CREDENTIALS } from '../helpers/loginHelper.js';
@@ -6,6 +18,7 @@ import { loginToApp, CREDENTIALS } from '../helpers/loginHelper.js';
 // ===================== CONSTANTS ============================
 const BASE_URL = CREDENTIALS.baseUrl;
 const DASHBOARD_URL = `${BASE_URL}/#/home/dashboard`;
+const PAGE_READY_TIMEOUT = 90000;
 
 // Navigation items expected to be present in the sidebar
 const EXPECTED_NAV_ITEMS = [
@@ -21,1090 +34,998 @@ const EXPECTED_NAV_ITEMS = [
   'Accounts Management',
   'Campaigns',
   'Smart Boost Campaign',
+  'Spotlights',
   'Driver KPI Slabs',
   'Reels',
   'TM Done Club',
+  'User Notifications',
 ];
 
-async function openDashboard(page) {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded' });
-  await page.waitForLoadState('networkidle').catch(() => {});
-  await page.waitForTimeout(2000);
+// Top 30 cards on the page and the key each one reads from the
+// getTopTenStoresFilterBySector response.
+const TOP_LISTS = [
+  { title: 'Top 30 Restaurants', card: 'app-restaurants-card', apiKey: 'TopTenRestaurants' },
+  { title: 'Top 30 Stores', card: 'app-stores-card', apiKey: 'TopTenStores' },
+  { title: 'Top 30 Groceries', card: 'app-groceries-card', apiKey: 'TopTenGroceries' },
+  { title: 'Top 30 Roses & Gifts', card: 'app-roses-gifts-card', apiKey: 'TopTenRosesAndGifts' },
+];
+
+// ===================== HELPERS ==============================
+
+/** Collapse whitespace so UI text and API strings compare cleanly. */
+const norm = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
+
+/** yyyy/MM/dd - the format the app sends in DateRange. */
+function fmtApiDate(date) {
+  return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`;
 }
 
-async function clickSidebarLinkAndExpectRoute(page, link, routePattern) {
-  await expect(link).toBeVisible({ timeout: 15000 });
-  const href = await link.getAttribute('href');
-  await link.click({ force: true });
-  await page.waitForURL(routePattern, { timeout: 15000 }).catch(async () => {
-    if (!href) return;
-    const target = href.startsWith('http') ? href : `${BASE_URL}/${href}`;
-    await page.goto(target, { waitUntil: 'domcontentloaded' });
+/** dd/MM/yyyy - the format the date-range inputs display. */
+function fmtInputDate(date) {
+  return `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${date.getFullYear()}`;
+}
+
+function daysAgo(days) {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  return date;
+}
+
+/**
+ * The DateRange the app computes for each quick filter
+ * (GlobalService.setDateRequest): Today = today..today,
+ * Week = today-7d..today-1d, Month = today-30d..today-1d.
+ */
+function expectedQuickRange(type) {
+  if (type === 'Today') return `${fmtApiDate(daysAgo(0))}-${fmtApiDate(daysAgo(0))}`;
+  if (type === 'Week') return `${fmtApiDate(daysAgo(7))}-${fmtApiDate(daysAgo(1))}`;
+  return `${fmtApiDate(daysAgo(30))}-${fmtApiDate(daysAgo(1))}`;
+}
+
+/**
+ * Records every /api/dashboard/* response (endpoint, request body,
+ * parsed response body). Attach it BEFORE loginToApp so the initial
+ * dashboard load is captured too.
+ * @param {import('@playwright/test').Page} page
+ */
+function trackDashboardApi(page) {
+  const calls = [];
+  page.on('response', async (response) => {
+    const url = response.url();
+    if (!url.includes('/api/dashboard/')) return;
+    const endpoint = url.split('/api/dashboard/')[1].split('?')[0];
+    let requestBody = null;
+    try {
+      requestBody = response.request().postDataJSON();
+    } catch {
+      requestBody = null;
+    }
+    let body = null;
+    try {
+      body = await response.json();
+    } catch {
+      body = null;
+    }
+    calls.push({ endpoint, status: response.status(), requestBody, body });
   });
-  await page.waitForLoadState('networkidle').catch(() => {});
-  await page.waitForTimeout(1000);
-  expect(page.url()).toMatch(routePattern);
+
+  return {
+    calls,
+    count(endpoint) {
+      return calls.filter((call) => call.endpoint === endpoint).length;
+    },
+    /** Waits for (and returns) the latest call to `endpoint` matching `predicate`. */
+    async latest(endpoint, predicate = () => true, timeout = PAGE_READY_TIMEOUT) {
+      let match;
+      await expect
+        .poll(
+          () => {
+            match = [...calls].reverse().find((call) => call.endpoint === endpoint && predicate(call));
+            return Boolean(match);
+          },
+          { timeout, message: `Expected a response from /api/dashboard/${endpoint}` }
+        )
+        .toBe(true);
+      expect(match.status, `/api/dashboard/${endpoint} should return HTTP 200`).toBe(200);
+      return match;
+    },
+  };
 }
 
-async function expectOptionalDashboardStatus(page, status) {
-  const statusLabel = page.getByText(new RegExp(`^\\s*${status}\\s*$`, 'i')).first();
-  if (await statusLabel.isVisible({ timeout: 5000 }).catch(() => false)) {
-    await expect(statusLabel).toBeVisible();
-    return;
+/**
+ * Logs in and lands on the dashboard with its API traffic recorded.
+ * @param {import('@playwright/test').Page} page
+ */
+async function openDashboard(page) {
+  const api = trackDashboardApi(page);
+  await loginToApp(page);
+  if (!page.url().includes('#/home/dashboard')) {
+    await page.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
   }
+  await expect(page.locator('h4.page-header', { hasText: 'Dashboard' })).toBeVisible({ timeout: PAGE_READY_TIMEOUT });
+  return api;
+}
 
-  const bodyText = await page.locator('body').innerText().catch(() => '');
-  const hasDashboardMetrics = /Accounts|Branches Operations|New Assignments|New Notifications|Top 10/i.test(bodyText);
-  expect(hasDashboardMetrics, `Dashboard should render metric cards even when ${status} status is not present in this environment.`).toBe(true);
-  console.log(`INFO: ${status} status card is not present in the current dashboard data set.`);
+/**
+ * Calendar period label, e.g. "SEPT 2026" / "OCT 2026". The app's
+ * DateAdapter abbreviates some months with 4 letters (SEPT), so match
+ * the 3-letter month prefix followed by any letters and the year.
+ * @param {Date} date
+ */
+function calendarLabel(date) {
+  const month = date.toLocaleString('en-US', { month: 'short' }).toUpperCase().slice(0, 3);
+  return new RegExp(`^\\s*${month}[A-Z]*\\s+${date.getFullYear()}\\s*$`);
+}
+
+/** Level-4 page heading of the routed page. */
+function pageHeading(page, name) {
+  return page.getByRole('heading', { level: 4, name }).first();
+}
+
+/**
+ * Real click that tolerates the app's cycling spinner overlay.
+ * @param {import('@playwright/test').Locator} locator
+ */
+async function clickWhenReady(locator, attempts = 5) {
+  const page = locator.page();
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await page.locator('.ngx-spinner-overlay, app-page-loader').first().waitFor({ state: 'hidden', timeout: 15000 }).catch(() => {});
+    try {
+      await locator.click({ timeout: 8000 });
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+/**
+ * Reads the rendered rows of a Top 30 card.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} card
+ */
+async function readTopList(page, card) {
+  return page.locator(`${card} ul.scroll-list > li`).evaluateAll((items) =>
+    items.map((item) => ({
+      name: (item.querySelector('h5')?.textContent || '').replace(/\s+/g, ' ').trim(),
+      count: Number((item.querySelector('.top-ten-list-count')?.textContent || '').trim()),
+    }))
+  );
+}
+
+/**
+ * Asserts that a Top 30 card renders exactly the items the API returned
+ * (or the "No results found" empty state when the API list is empty).
+ * @param {import('@playwright/test').Page} page
+ * @param {{title: string, card: string, apiKey: string}} list
+ * @param {Array<{Name: string, Count: number}>} apiItems
+ */
+async function expectTopListMatchesApi(page, list, apiItems) {
+  const card = page.locator(list.card);
+  await expect(card.locator('h3')).toContainText(list.title);
+
+  const expected = (apiItems || []).map((item) => ({ name: norm(item.Name), count: Number(item.Count) }));
+  await expect
+    .poll(() => readTopList(page, list.card), {
+      timeout: 30000,
+      message: `${list.title} should render exactly the ${list.apiKey} items returned by the API`,
+    })
+    .toEqual(expected);
+
+  if (expected.length === 0) {
+    await expect(card.getByText('No results found')).toBeVisible();
+  } else {
+    await expect(card.getByText('No results found')).toHaveCount(0);
+  }
+}
+
+/**
+ * Reads the value shown under a Branches Operations status label.
+ * @param {import('@playwright/test').Page} page
+ * @param {'OPENED'|'BUSY'|'CLOSED'} status
+ */
+function statusValue(page, status) {
+  return page
+    .locator('.col-md-4.text-center')
+    .filter({ has: page.locator('p', { hasText: new RegExp(`^\\s*${status}\\s*$`) }) })
+    .locator('p')
+    .nth(1);
+}
+
+/**
+ * Asserts the notification-style card lists exactly the API items.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} card
+ * @param {{Items: Array<{Notification: string}>}} apiBody
+ */
+async function expectNotificationListMatchesApi(page, card, apiBody) {
+  const expected = (apiBody?.Items || []).map((item) => norm(item.Notification));
+  await expect
+    .poll(
+      () =>
+        page
+          .locator(`${card} ul li`)
+          .evaluateAll((items) => items.map((item) => (item.querySelector('h5')?.textContent || '').replace(/\s+/g, ' ').trim())),
+      { timeout: 30000, message: `${card} should list the notifications returned by the API` }
+    )
+    .toEqual(expected);
 }
 
 // ============================================================
 // DASH-01: Page Load & URL Verification
 // ============================================================
-// Checks: After logging in, does the dashboard URL include
-// the word "dashboard"? Does the body contain content
-// (to ensure it is not a blank page)?
-// ============================================================
 test('DASH-01: Dashboard page loads and URL is correct', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(3000);
+  await openDashboard(page);
 
-  // Verify URL
-  const currentUrl = page.url();
-  expect(currentUrl).toContain('dashboard');
+  expect(page.url()).toContain('#/home/dashboard');
+  await expect(page.locator('app-dashboard-panel')).toBeVisible();
+  await expect(page.locator('app-counter-card')).toHaveCount(2);
+  await expect(page.locator('app-listing-panel')).toBeVisible();
 
-  // Verify body contains content (to ensure page is not blank)
-  const bodyText = await page.innerText('body');
-  expect(bodyText.length).toBeGreaterThan(100);
-
-  console.log('✅ DASH-01 PASSED: Dashboard URL verified:', currentUrl);
+  console.log('DASH-01 PASSED: Dashboard URL verified:', page.url());
 });
 
 // ============================================================
 // DASH-02: Sidebar Renders All Navigation Items
 // ============================================================
-// Checks: Are all expected navigation links present in the sidebar?
-// Uses ".sidebar a" selectors. Verifies if the admin can navigate
-// to all modules.
-// ============================================================
 test('DASH-02: Sidebar shows all expected navigation menu items', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openDashboard(page);
 
-  // Check the total count of sidebar links
-  const sidebarLinks = page.locator('.sidebar a');
-  const count = await sidebarLinks.count();
-  console.log(`ℹ️ Total sidebar links found: ${count}`);
-  expect(count).toBeGreaterThan(10); // At least all main modules
-
-  // Check if each expected nav item is present in the sidebar text
-  const sidebarText = await page.locator('.sidebar').innerText();
+  const sidebar = page.locator('#leftsidebar');
+  await expect(sidebar).toBeVisible();
   for (const navItem of EXPECTED_NAV_ITEMS) {
-    const found = sidebarText.includes(navItem);
-    console.log(`  ${found ? '✅' : '❌'} "${navItem}" in sidebar`);
-    expect(found, `Expected "${navItem}" in sidebar`).toBe(true);
+    const link = sidebar.locator('a.menu-top', { has: page.locator('span.hide-menu', { hasText: new RegExp(`^\\s*${navItem.replace(/[&]/g, '\\$&')}\\s*$`) }) });
+    await expect(link, `Expected "${navItem}" in sidebar`).toHaveCount(1);
+    await expect(link).toHaveAttribute('href', /^#\/home\//);
   }
+  await expect(sidebar.locator('a', { hasText: 'Logout' })).toBeVisible();
 
-  console.log('✅ DASH-02 PASSED: All sidebar navigation items verified.');
+  console.log('DASH-02 PASSED: All sidebar navigation items verified.');
 });
 
 // ============================================================
 // DASH-03: Header / Navbar Visibility
 // ============================================================
-// Checks: Is the top navbar visible?
-//   - nav.navbar   → top navigation bar
-//   - .navbar-brand → brand/logo link (linked to the dashboard)
-//   - .logo-name   → "TMDone" app name text
-//   - .logo-image  → logo image element
-// ============================================================
 test('DASH-03: Header navbar is visible with logo and brand name', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openDashboard(page);
 
-  // Verify top navbar visibility
-  const navbar = page.locator('nav.navbar').first();
-  await expect(navbar).toBeVisible();
-
-  // Verify brand/logo link (linked to the dashboard)
-  const brandLink = page.locator('.navbar-brand').first();
+  await expect(page.locator('nav.navbar').first()).toBeVisible();
+  const brandLink = page.locator('a.navbar-brand').first();
   await expect(brandLink).toBeVisible();
+  await expect(brandLink).toHaveAttribute('href', '#/home/dashboard');
+  await expect(page.locator('.logo-name').first()).toHaveText(/TMDone Console/);
+  const logo = page.locator('img.logo-image').first();
+  await expect(logo).toBeVisible();
+  // The logo image must actually have loaded (not a broken image).
+  await expect.poll(() => logo.evaluate((img) => img.complete && img.naturalWidth > 0)).toBe(true);
 
-  // Verify "TMDone" app name text
-  const appName = page.locator('.logo-name').first();
-  await expect(appName).toBeVisible();
-  const nameText = await appName.innerText();
-  expect(nameText).toContain('TMDone');
-
-  // Verify logo image
-  const logoImg = page.locator('.logo-image').first();
-  await expect(logoImg).toBeVisible();
-
-  console.log('✅ DASH-03 PASSED: Header/Navbar elements verified.');
+  console.log('DASH-03 PASSED: Header/Navbar elements verified.');
 });
 
 // ============================================================
 // DASH-04: Fullscreen Button in Header
 // ============================================================
-// Checks: Is the fullscreen toggle button present in the header?
-// Can the admin click it to view the screen in full-view?
+// Clicking the fullscreen button enters browser fullscreen, clicking
+// it again leaves fullscreen.
 // ============================================================
-test('DASH-04: Fullscreen button is present in the header', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+test('DASH-04: Fullscreen button toggles browser fullscreen mode', async ({ page }) => {
+  await openDashboard(page);
 
-  // Exact selector: li.fullscreen > button (confirmed from live DOM inspection)
-  // Using toBeVisible() instead of isVisible() — auto-waits for Angular to render
   const fullscreenBtn = page.locator('li.fullscreen button').first();
-  await expect(fullscreenBtn).toBeVisible({ timeout: 10000 });
+  await expect(fullscreenBtn).toBeVisible();
 
-  console.log('✅ DASH-04 PASSED: Fullscreen button found in header.');
+  await clickWhenReady(fullscreenBtn);
+  await expect.poll(() => page.evaluate(() => Boolean(document.fullscreenElement))).toBe(true);
+
+  await clickWhenReady(fullscreenBtn);
+  await expect.poll(() => page.evaluate(() => Boolean(document.fullscreenElement))).toBe(false);
+
+  console.log('DASH-04 PASSED: Fullscreen enter/exit verified.');
 });
 
 // ============================================================
 // DASH-05: User Profile Menu Access
 // ============================================================
-// Checks: Is the user avatar/profile button visible in the header?
-// Upon clicking it:
-//   - Is the Logout option visible?
-//   - Is the Change Password option visible?
-// ============================================================
 test('DASH-05: User profile menu opens and shows Logout option', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openDashboard(page);
 
-  // Profile trigger — try multiple selectors for the "M" avatar circle in top-right header
-  const profileTrigger = page.locator([
-    '.user_pro button',
-    'nav .nav-item.user_pro',
-    '.nav-item.user_pro',
-    '[class*="user_pro"]',
-    'nav li button.mat-icon-button',
-  ].join(', ')).first();
+  const profileToggle = page.locator('li.user_profile a.dropdown-toggle');
+  const menu = page.locator('li.user_profile .dropdown-menu');
+  await expect(profileToggle).toBeVisible();
+  await expect(menu).toBeHidden();
 
-  const isVisible = await profileTrigger.isVisible().catch(() => false);
-  console.log(`ℹ️ Profile trigger visible: ${isVisible}`);
+  await clickWhenReady(profileToggle);
+  await expect(menu).toBeVisible();
+  await expect(menu.locator('a', { hasText: 'Change Password' })).toBeVisible();
+  await expect(menu.locator('a', { hasText: 'Logout' })).toBeVisible();
 
-  if (isVisible) {
-    await profileTrigger.click();
-    await page.waitForTimeout(1000);
+  // Clicking the avatar again closes the menu.
+  await clickWhenReady(profileToggle);
+  await expect(menu).toBeHidden();
 
-    // Verify Logout option
-    const logoutBtn = page.locator('a:has-text("Logout"), button:has-text("Logout")').first();
-    const logoutVisible = await logoutBtn.isVisible().catch(() => false);
-    console.log(`ℹ️ Logout button visible after profile click: ${logoutVisible}`);
-
-    // Verify Change Password link
-    const changePwdLink = page.locator('a:has-text("Change Password"), a:has-text("lock_reset")').first();
-    const changePwdVisible = await changePwdLink.isVisible().catch(() => false);
-    console.log(`ℹ️ Change Password visible: ${changePwdVisible}`);
-
-    // Dismiss the menu
-    await page.keyboard.press('Escape');
-    await page.waitForTimeout(500);
-  } else {
-    // Safe fallback — don't crash if element not found
-    console.log('⚠️ DASH-05: Profile trigger not found via primary selectors — skipping click.');
-  }
-
-  console.log('✅ DASH-05 PASSED: User profile area verified.');
+  console.log('DASH-05 PASSED: User profile menu verified.');
 });
 
-
 // ============================================================
-// DASH-05b: Change Password Functionality
+// DASH-05b: Change Password Dialog
 // ============================================================
-// Checks: Can the admin open the change password form using the profile menu?
-// This intentionally avoids submitting the form because the suite uses a
-// shared UAT account for later tests.
+// Opens the dialog, checks its three password fields, that the
+// submit button is disabled while the form is empty, that the eye
+// icon reveals a field, then cancels. Nothing is typed or submitted
+// (the suite shares a single account).
 // ============================================================
 test('DASH-05b: User profile menu - Change Password form opens', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openDashboard(page);
 
-  // Profile trigger (the "M" avatar circle in the header)
-  const profileTrigger = page.locator('.nav-item.user_pro, [class*="user_pro"]').first();
+  await clickWhenReady(page.locator('li.user_profile a.dropdown-toggle'));
+  await clickWhenReady(page.locator('.user_dw_menu a', { hasText: 'Change Password' }));
 
-  try {
-    await profileTrigger.waitFor({ state: 'visible', timeout: 5000 });
-    await profileTrigger.click();
-  } catch (e) {
-    console.log('⚠️ DASH-05b SKIPPED: Profile trigger could not be clicked.');
-    return;
+  const dialog = page.locator('mat-dialog-container');
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('Change Password');
+
+  for (const field of ['OldPassword', 'Password', 'ConfirmPassword']) {
+    const input = dialog.locator(`input[formcontrolname="${field}"]`);
+    await expect(input).toBeVisible();
+    await expect(input).toHaveAttribute('type', 'password');
+    await expect(input).toHaveValue('');
   }
+  await expect(dialog.getByText('Current Password')).toBeVisible();
+  await expect(dialog.getByText('New Password')).toBeVisible();
+  await expect(dialog.getByText('Confirm Password')).toBeVisible();
 
-  await page.waitForTimeout(1000);
+  // Submit is disabled while the form is invalid (empty).
+  await expect(dialog.getByRole('button', { name: 'Change Password' })).toBeDisabled();
 
-  // Click Change Password link
-  const changePwdLink = page.locator('a:has-text("Change Password"), a:has-text("lock_reset")').first();
-  const changePwdVisible = await changePwdLink.isVisible().catch(() => false);
+  // The eye icon toggles visibility of the Current Password field.
+  const oldPassword = dialog.locator('input[formcontrolname="OldPassword"]');
+  await clickWhenReady(dialog.locator('a.show-pwd-icon').first());
+  await expect(oldPassword).toHaveAttribute('type', 'text');
+  await clickWhenReady(dialog.locator('a.show-pwd-icon').first());
+  await expect(oldPassword).toHaveAttribute('type', 'password');
 
-  if (changePwdVisible) {
-    await changePwdLink.click();
-    await page.waitForTimeout(2000);
+  await clickWhenReady(dialog.getByRole('button', { name: 'Cancel' }));
+  await expect(page.locator('mat-dialog-container')).toHaveCount(0);
 
-    // Identify the password fields (Current, New, Confirm)
-    // We use a generic approach to find password inputs since we don't have the exact IDs
-    const passwordInputs = page.locator('input[type="password"]');
-    const inputCount = await passwordInputs.count();
-
-    if (inputCount >= 3) {
-      // Typically: 1st is Current, 2nd is New, 3rd is Confirm New.
-      await expect(passwordInputs.nth(0)).toBeVisible();
-      await expect(passwordInputs.nth(1)).toBeVisible();
-      await expect(passwordInputs.nth(2)).toBeVisible();
-
-      await page.keyboard.press('Escape');
-      await page.waitForTimeout(500);
-      console.log('DASH-05b PASSED: Change password form opened without changing shared credentials.');
-    } else {
-      console.log(`⚠️ DASH-05b SKIPPED: Expected 3 password fields, but found ${inputCount}. Form structure may be different.`);
-    }
-  } else {
-    console.log('⚠️ DASH-05b SKIPPED: Change Password link not found in the profile menu.');
-  }
+  console.log('DASH-05b PASSED: Change password dialog opened and cancelled without submitting.');
 });
-
 
 // ============================================================
 // DASH-06: Logout Functionality
 // ============================================================
-// Checks: Does clicking the Logout link in the sidebar
-// sign the user out? Does it redirect to the signin page
-// after logging out?
+// Logout is client-side only (clears this browser context's storage),
+// so it does not affect the shared cached session used by other tests.
 // ============================================================
 test('DASH-06: Logout works and redirects to the sign-in page', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openDashboard(page);
 
-  // Logout link at the bottom of the sidebar
-  const logoutLink = page.locator('.sidebar a:has-text("Logout"), a:has-text("power_settings_newLogout")').first();
-  const logoutVisible = await logoutLink.isVisible().catch(() => false);
+  const logoutLink = page.locator('#leftsidebar a', { hasText: 'Logout' });
+  await expect(logoutLink).toBeVisible();
+  await clickWhenReady(logoutLink);
 
-  if (logoutVisible) {
-    await logoutLink.click();
-    await page.waitForTimeout(3000);
-    await page.waitForLoadState('networkidle');
-    // Verify redirection to the signin page
-    expect(page.url()).toContain('signin');
-    console.log('✅ DASH-06 PASSED: Logged out, redirected to signin page.');
-  } else {
-    console.log('⚠️ DASH-06 INFO: Sidebar logout link not directly visible — checking alternative.');
-    const altLogout = page.locator('a:has-text("Logout"), button:has-text("Logout")').first();
-    const altVisible = await altLogout.isVisible().catch(() => false);
-    console.log(`  ℹ️ Alternative logout visible: ${altVisible}`);
-  }
+  await page.waitForURL(/#\/authentication\/signin/, { timeout: 30000 });
+  await expect(page.locator('input[type="password"]').first()).toBeVisible({ timeout: 30000 });
+  expect(await page.evaluate(() => localStorage.getItem('currentUser'))).toBeNull();
+
+  // After logout the dashboard is no longer reachable.
+  await page.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded' });
+  await page.waitForURL(/signin/, { timeout: 30000 });
+
+  console.log('DASH-06 PASSED: Logged out, session cleared and dashboard guarded.');
 });
 
 // ============================================================
 // DASH-07: Sidebar Navigation - Click Dashboard Link
 // ============================================================
-// Checks: Does clicking the "Dashboard" link in the sidebar
-// keep the user on the dashboard route (without redirecting)?
-// ============================================================
 test('DASH-07: Clicking Dashboard sidebar link stays on dashboard', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openDashboard(page);
 
-  const dashboardLink = page.locator('.sidebar a:has-text("Dashboard")').first();
+  // Collapsible group toggles (Offers, Smart Boost...) also carry the current
+  // route as href, so only the real top-level link is selected.
+  const dashboardLink = page.locator('#leftsidebar a.menu-top:not(.menu-toggle)[href="#/home/dashboard"]');
   await expect(dashboardLink).toBeVisible();
+  await clickWhenReady(dashboardLink);
 
-  await dashboardLink.click();
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(1500);
+  await expect(page).toHaveURL(/#\/home\/dashboard/);
+  await expect(page.locator('h4.page-header', { hasText: 'Dashboard' })).toBeVisible();
+  await expect(dashboardLink.locator('xpath=..')).toHaveClass(/active/);
 
-  // Verify if the URL still contains "dashboard"
-  expect(page.url()).toContain('dashboard');
-  console.log('✅ DASH-07 PASSED: Dashboard sidebar link navigates correctly.');
+  console.log('DASH-07 PASSED: Dashboard sidebar link navigates correctly.');
 });
 
 // ============================================================
 // DASH-08: Sidebar Navigation - Campaigns
 // ============================================================
-// Checks: Does clicking the "Campaigns" link in the sidebar
-// include "campaigns" in the URL?
-// ============================================================
 test('DASH-08: Clicking Campaigns sidebar link navigates to Campaigns page', async ({ page }) => {
   await openDashboard(page);
 
-  const campaignsLink = page.locator('.sidebar a:has-text("Campaigns")').first();
-  await clickSidebarLinkAndExpectRoute(page, campaignsLink, /campaigns/i);
+  await clickWhenReady(page.locator('#leftsidebar a[href="#/home/campaigns"]'));
+  await page.waitForURL(/#\/home\/campaigns/, { timeout: 30000 });
+  await expect(pageHeading(page, /^Campaigns$/)).toBeVisible({ timeout: 60000 });
 
-  console.log('✅ DASH-08 PASSED: Campaigns navigation verified. URL:', page.url());
+  console.log('DASH-08 PASSED: Campaigns navigation verified. URL:', page.url());
 });
-
 
 // ============================================================
 // DASH-09: Sidebar Navigation - Stores
 // ============================================================
-// Checks: Does clicking the "Stores" link in the sidebar
-// include "stores" in the URL?
-// ============================================================
 test('DASH-09: Clicking Stores sidebar link navigates to Stores page', async ({ page }) => {
   await openDashboard(page);
 
-  const storesLink = page.locator('.sidebar a:has-text("Stores")').first();
-  await clickSidebarLinkAndExpectRoute(page, storesLink, /stores/i);
+  await clickWhenReady(page.locator('#leftsidebar a[href="#/home/stores"]'));
+  await page.waitForURL(/#\/home\/stores$/, { timeout: 30000 });
+  await expect(pageHeading(page, /^Manage Stores$/)).toBeVisible({ timeout: 60000 });
 
-  console.log('✅ DASH-09 PASSED: Stores navigation verified. URL:', page.url());
+  console.log('DASH-09 PASSED: Stores navigation verified. URL:', page.url());
 });
 
 // ============================================================
 // DASH-10: Sidebar Navigation - Reports
 // ============================================================
-// Checks: Does clicking the "Reports" link in the sidebar
-// include "reports" in the URL?
-// ============================================================
 test('DASH-10: Clicking Reports sidebar link navigates to Reports page', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openDashboard(page);
 
-  const reportsLink = page.locator('.sidebar a:has-text("Reports")').first();
-  await expect(reportsLink).toBeVisible();
-  await reportsLink.click();
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await clickWhenReady(page.locator('#leftsidebar a[href="#/home/reports"]'));
+  await page.waitForURL(/#\/home\/reports/, { timeout: 30000 });
+  await expect(pageHeading(page, /^Reports$/)).toBeVisible({ timeout: 60000 });
 
-  expect(page.url()).toContain('reports');
-  console.log('✅ DASH-10 PASSED: Reports navigation verified. URL:', page.url());
+  console.log('DASH-10 PASSED: Reports navigation verified. URL:', page.url());
 });
 
 // ============================================================
-// DASH-11: Sidebar Navigation - Offers
+// DASH-11: Sidebar Navigation - Offers (sub-menu)
 // ============================================================
-// Checks: Does clicking the "Offers" link in the sidebar
-// include "offers" in the URL?
+// "Offers" is a menu toggle: clicking it expands a sub-menu whose
+// "Target Audience Builder" entry opens the offers page.
 // ============================================================
 test('DASH-11: Clicking Offers sidebar link navigates to Offers page', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openDashboard(page);
 
-  const offersLink = page.locator('.sidebar a:has-text("Offers")').first();
-  await expect(offersLink).toBeVisible();
-  await offersLink.click();
-  await page.waitForTimeout(1000); // wait for submenu to expand
+  const offersToggle = page.locator('#leftsidebar a.menu-toggle', { hasText: 'Offers' });
+  const subLink = page.locator('#leftsidebar a.ml-menu[href="#/home/offers/offer-queries"]');
+  await expect(offersToggle).toBeVisible();
+  await expect(subLink).toBeHidden();
 
-  // Click the sub-menu item
-  const audienceBuilderLink = page.locator('.sidebar a:has-text("Target Audience Builder")').first();
-  if (await audienceBuilderLink.isVisible()) {
-    await audienceBuilderLink.click();
-  } else {
-    // If not visible, just click the parent again or rely on first click
-    console.log('⚠️ Target Audience Builder not visible, maybe already on page');
-  }
+  await clickWhenReady(offersToggle);
+  await expect(subLink).toBeVisible();
+  await expect(subLink).toHaveText(/Target Audience Builder/);
 
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await clickWhenReady(subLink);
+  await page.waitForURL(/#\/home\/offers\/offer-queries/, { timeout: 30000 });
 
-  expect(page.url()).toContain('offers');
-  console.log('✅ DASH-11 PASSED: Offers navigation verified. URL:', page.url());
+  console.log('DASH-11 PASSED: Offers navigation verified. URL:', page.url());
 });
 
 // ============================================================
 // DASH-12: Sidebar Navigation - Order Management
 // ============================================================
-// Checks: Does clicking the "Order Management" link in the sidebar
-// include "order-management" or similar path in the URL?
-// ============================================================
 test('DASH-12: Clicking Order Management sidebar link navigates to Order Management page', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openDashboard(page);
 
-  const ordersLink = page.locator('.sidebar a:has-text("Order Management")').first();
-  await expect(ordersLink).toBeVisible();
-  await ordersLink.click();
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await clickWhenReady(page.locator('#leftsidebar a[href="#/home/order-management"]'));
+  await page.waitForURL(/#\/home\/order-management/, { timeout: 30000 });
+  await expect(page.locator('h4.page-header').first()).toContainText(/Order/i, { timeout: 60000 });
 
-  expect(page.url()).toContain('order');
-  console.log('✅ DASH-12 PASSED: Order Management navigation verified. URL:', page.url());
+  console.log('DASH-12 PASSED: Order Management navigation verified. URL:', page.url());
 });
-
 
 // ============================================================
 // DASH-13: Sidebar Collapse / Expand Toggle
 // ============================================================
-// Checks: Does clicking the hamburger button (button.sidemenu-collapse)
-// in the header collapse the sidebar?
-// Does clicking it again expand the sidebar?
-// Do the sidebar links remain present when expanded (not disappear)?
+// The hamburger adds "side-closed" to <body> (collapsed sidebar) and
+// removes it again on the second click.
 // ============================================================
 test('DASH-13: Sidebar collapse/expand toggle works via hamburger button', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openDashboard(page);
 
-  // Hamburger button (sidemenu-collapse)
-  const hamburgerBtn = page.locator('button.sidemenu-collapse').first();
-  const btnVisible = await hamburgerBtn.isVisible().catch(() => false);
-  console.log(`ℹ️ Hamburger button visible: ${btnVisible}`);
+  const hamburgerBtn = page.locator('button.sidemenu-collapse');
+  const body = page.locator('body');
+  await expect(hamburgerBtn).toBeVisible();
+  await expect(body).not.toHaveClass(/\bside-closed\b/);
 
-  if (btnVisible) {
-    // Click to collapse
-    await hamburgerBtn.click();
-    await page.waitForTimeout(1000);
-    console.log('ℹ️ Sidebar toggle clicked (collapse).');
+  await clickWhenReady(hamburgerBtn);
+  await expect(body).toHaveClass(/\bside-closed\b/);
+  await expect(body).toHaveClass(/\bsubmenu-closed\b/);
 
-    // Click to expand
-    await hamburgerBtn.click();
-    await page.waitForTimeout(1000);
-    console.log('ℹ️ Sidebar toggle clicked (expand).');
+  await clickWhenReady(hamburgerBtn);
+  await expect(body).not.toHaveClass(/\bside-closed\b/);
+  await expect(page.locator('#leftsidebar a.menu-top', { hasText: 'Dashboard' })).toBeVisible();
 
-    // Verify if sidebar links are still present
-    const sidebarCount = await page.locator('.sidebar a').count();
-    expect(sidebarCount).toBeGreaterThan(0);
-  } else {
-    console.log('⚠️ DASH-13 SKIPPED: Hamburger button not visible.');
-  }
-
-  console.log('✅ DASH-13 PASSED: Sidebar toggle verified.');
+  console.log('DASH-13 PASSED: Sidebar collapse/expand verified.');
 });
 
 // ============================================================
 // DASH-14: Browser Tab Title Check
 // ============================================================
-// Checks: Is the page title set in the browser tab (not empty)?
-// The title should be meaningful to identify the app.
-// ============================================================
 test('DASH-14: Browser page title identifies the application', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openDashboard(page);
 
-  const title = await page.title();
-  console.log(`ℹ️ Page title: "${title}"`);
-  // Ensure the title is not empty
-  expect(title.length).toBeGreaterThan(0);
+  await expect(page).toHaveTitle('TMDone-Console');
 
-  console.log('✅ DASH-14 PASSED: Page title is set:', title);
+  console.log('DASH-14 PASSED: Page title is set:', await page.title());
 });
 
 // ============================================================
-// DASH-15: Dashboard Stats - Number of Accounts per Brand
+// DASH-15: Number of Accounts per Brand
 // ============================================================
 test('DASH-15: Dashboard shows Number of Accounts per Brand count', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(3000);
+  const api = await openDashboard(page);
+  const brand = await api.latest('getAccountsPerBrand');
+  expect(typeof brand.body, 'getAccountsPerBrand should return a number').toBe('number');
 
-  const statLabel = page.locator('text=/Number of Accounts per Brand|Accounts/i').first();
-  await expect(statLabel).toBeVisible();
-  console.log('✅ DASH-15 PASSED: Accounts per Brand count is visible.');
+  const card = page.locator('app-counter-card').filter({ hasText: 'Number of Accounts per Brand' });
+  await expect(card).toContainText('BRAND(s)');
+  await expect(card.locator('.card-amount-values')).toHaveText(String(brand.body));
+
+  console.log(`DASH-15 PASSED: Accounts per Brand = ${brand.body} (matches API).`);
 });
 
 // ============================================================
-// DASH-16: Dashboard Stats - Number of Accounts per Branch
+// DASH-16: Number of Accounts per Branch
 // ============================================================
 test('DASH-16: Dashboard shows Number of Accounts per Branch count', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(3000);
+  const api = await openDashboard(page);
+  const branch = await api.latest('getAccountsPerBranch');
+  expect(typeof branch.body, 'getAccountsPerBranch should return a number').toBe('number');
 
-  const statLabel = page.locator('text=/Number of Accounts per Branch|Branches Operations/i').first();
-  await expect(statLabel).toBeVisible();
-  console.log('✅ DASH-16 PASSED: Accounts per Branch count is visible.');
+  const card = page.locator('app-counter-card').filter({ hasText: 'Number of Accounts per Branch' });
+  await expect(card).toContainText('BRANCH(s)');
+  await expect(card.locator('.card-amount-values')).toHaveText(String(branch.body));
+
+  console.log(`DASH-16 PASSED: Accounts per Branch = ${branch.body} (matches API).`);
 });
 
 // ============================================================
-// DASH-17: Dashboard Stats - OPENED
+// DASH-17 / 18 / 19: Branches Operations status counts
 // ============================================================
-test('DASH-17: Dashboard shows OPENED status count', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(3000);
+for (const [id, status, apiKey] of [
+  ['DASH-17', 'OPENED', 'Opened'],
+  ['DASH-18', 'BUSY', 'Busy'],
+  ['DASH-19', 'CLOSED', 'Closed'],
+]) {
+  test(`${id}: Dashboard shows ${status} status count`, async ({ page }) => {
+    const api = await openDashboard(page);
+    const storeStatus = await api.latest('getStoreStatus');
+    expect(typeof storeStatus.body?.[apiKey], `getStoreStatus.${apiKey} should be a number`).toBe('number');
 
-  await expectOptionalDashboardStatus(page, 'OPENED');
-  console.log('✅ DASH-17 PASSED: OPENED status is visible.');
-});
+    const value = statusValue(page, status);
+    await expect(value).toBeVisible();
+    await expect.poll(async () => Number((await value.innerText()).trim())).toBe(storeStatus.body[apiKey]);
 
-// ============================================================
-// DASH-18: Dashboard Stats - BUSY
-// ============================================================
-test('DASH-18: Dashboard shows BUSY status count', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(3000);
-
-  await expectOptionalDashboardStatus(page, 'BUSY');
-  console.log('✅ DASH-18 PASSED: BUSY status is visible.');
-});
+    console.log(`${id} PASSED: ${status} = ${storeStatus.body[apiKey]} (matches API).`);
+  });
+}
 
 // ============================================================
-// DASH-19: Dashboard Stats - CLOSED
-// ============================================================
-test('DASH-19: Dashboard shows CLOSED status count', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(3000);
-
-  await expectOptionalDashboardStatus(page, 'CLOSED');
-  console.log('✅ DASH-19 PASSED: CLOSED status is visible.');
-});
-
-// ============================================================
-// DASH-20: Dashboard Stats - New Assignments
+// DASH-20: New Assignments
 // ============================================================
 test('DASH-20: Dashboard shows New Assignments', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(3000);
+  const api = await openDashboard(page);
+  const assignments = await api.latest('getNotifications', (call) => call.requestBody?.Type === 'ASSIGNMENT');
+  expect(assignments.requestBody).toMatchObject({ Page: 1, PageSize: 10 });
 
-  const statLabel = page.locator('text="New Assignments"').first();
-  await expect(statLabel).toBeVisible();
-  console.log('✅ DASH-20 PASSED: New Assignments is visible.');
+  await expect(page.locator('app-assignments-card h3')).toContainText('New Assignments');
+  await expectNotificationListMatchesApi(page, 'app-assignments-card', assignments.body);
+
+  console.log(`DASH-20 PASSED: ${assignments.body.Items.length} assignments rendered (matches API).`);
 });
 
 // ============================================================
-// DASH-21: Dashboard Stats - New Notifications
+// DASH-21: New Notifications
 // ============================================================
 test('DASH-21: Dashboard shows New Notifications', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(3000);
+  const api = await openDashboard(page);
+  const notifications = await api.latest('getNotifications', (call) => call.requestBody?.Type === 'STORE_STATUS_CHANGE');
+  expect(notifications.requestBody).toMatchObject({ Page: 1, PageSize: 10 });
 
-  const statLabel = page.locator('text="New Notifications"').first();
-  await expect(statLabel).toBeVisible();
-  console.log('✅ DASH-21 PASSED: New Notifications is visible.');
+  await expect(page.locator('app-notification-card h3')).toContainText('New Notifications');
+  await expectNotificationListMatchesApi(page, 'app-notification-card', notifications.body);
+
+  console.log(`DASH-21 PASSED: ${notifications.body.Items.length} notifications rendered (matches API).`);
 });
 
 // ============================================================
-// DASH-22: Dashboard Date Filters (Today, Week, Month)
+// DASH-22: Date Filters (Today, Week, Month)
+// ============================================================
+// Each quick filter re-queries the Top 30 lists with its own date
+// window, becomes the highlighted button, and the lists re-render with
+// the returned data. Month is the default on page load.
 // ============================================================
 test('DASH-22: Dashboard allows filtering by Today, Week, and Month', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(3000);
+  test.setTimeout(240000);
+  const api = await openDashboard(page);
 
-  // Look for the "Select a date range" or "Today", "Week", "Month" buttons/text
-  const dateFilterLabel = page.locator('text=/Select a date range|Today|Week|Month/i').first();
-  await expect(dateFilterLabel).toBeVisible();
+  // Default: Month is active and was used for the initial load.
+  const initial = await api.latest('getTopTenStoresFilterBySector');
+  expect(initial.requestBody.DateReqType).toBe('Month');
+  expect(initial.requestBody.DateRange).toBe(expectedQuickRange('Month'));
+  await expect(page.locator('.btn-filter button', { hasText: 'Month' })).toHaveClass(/btn-primary/);
 
-  console.log('✅ DASH-22 PASSED: Date range filters are present.');
+  for (const type of ['Today', 'Week', 'Month']) {
+    const before = api.count('getTopTenStoresFilterBySector');
+    await clickWhenReady(page.locator('.btn-filter button', { hasText: type }));
+
+    const response = await api.latest(
+      'getTopTenStoresFilterBySector',
+      (call) => call.requestBody?.DateReqType === type && api.count('getTopTenStoresFilterBySector') > before
+    );
+    expect(response.requestBody.DateRange, `${type} should query its own date window`).toBe(expectedQuickRange(type));
+
+    for (const name of ['Today', 'Week', 'Month']) {
+      const button = page.locator('.btn-filter button', { hasText: name });
+      if (name === type) await expect(button).toHaveClass(/btn-primary/);
+      else await expect(button).not.toHaveClass(/btn-primary/);
+    }
+    for (const list of TOP_LISTS) {
+      await expectTopListMatchesApi(page, list, response.body[list.apiKey]);
+    }
+    console.log(`  ${type}: ${response.requestBody.DateRange} -> ${response.body.TopTenRestaurants.length} restaurants`);
+  }
+
+  console.log('DASH-22 PASSED: Today/Week/Month filters query the right window and re-render the lists.');
 });
 
 // ============================================================
-// DASH-23: Dashboard Top 10 - Restaurants
+// DASH-23 .. DASH-26: Top 30 lists render the API data
 // ============================================================
-test('DASH-23: Dashboard shows Top 10 Restaurants', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(3000);
+for (const [id, list] of [
+  ['DASH-23', TOP_LISTS[0]],
+  ['DASH-24', TOP_LISTS[1]],
+  ['DASH-25', TOP_LISTS[2]],
+  ['DASH-26', TOP_LISTS[3]],
+]) {
+  test(`${id}: Dashboard shows ${list.title}`, async ({ page }) => {
+    const api = await openDashboard(page);
+    const response = await api.latest('getTopTenStoresFilterBySector');
+    expect(Array.isArray(response.body?.[list.apiKey]), `${list.apiKey} should be an array`).toBe(true);
 
-  const topLabel = page.locator('text=/Top 10 Restaurants/i').first();
-  await expect(topLabel).toBeVisible();
-  console.log('✅ DASH-23 PASSED: Top 10 Restaurants is visible.');
-});
+    await expect(page.locator(list.card)).toBeVisible();
+    await expectTopListMatchesApi(page, list, response.body[list.apiKey]);
 
-// ============================================================
-// DASH-24: Dashboard Top 10 - Stores
-// ============================================================
-test('DASH-24: Dashboard shows Top 10 Stores', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(3000);
-
-  const topLabel = page.locator('text=/Top 10 Stores/i').first();
-  await expect(topLabel).toBeVisible();
-  console.log('✅ DASH-24 PASSED: Top 10 Stores is visible.');
-});
+    console.log(`${id} PASSED: ${list.title} renders ${response.body[list.apiKey].length} item(s) (matches API).`);
+  });
+}
 
 // ============================================================
-// DASH-25: Dashboard Top 10 - Groceries
-// ============================================================
-test('DASH-25: Dashboard shows Top 10 Groceries', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(3000);
-
-  const topLabel = page.locator('text=/Top 10 Groceries/i').first();
-  await expect(topLabel).toBeVisible();
-  console.log('✅ DASH-25 PASSED: Top 10 Groceries is visible.');
-});
-
-// ============================================================
-// DASH-26: Dashboard Top 10 - Roses & Gifts
-// ============================================================
-test('DASH-26: Dashboard shows Top 10 Roses & Gifts', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(3000);
-
-  const topLabel = page.locator('text=/Top 10 Roses( & | and )Gifts/i').first();
-  await expect(topLabel).toBeVisible();
-  console.log('✅ DASH-26 PASSED: Top 10 Roses & Gifts is visible.');
-});
-
-// ============================================================
-// DASH-27: Dashboard Real-Time Data Updates
-// ============================================================
-// Checks: Do dashboard metrics update in real-time?
-// Verifies that numeric values are visible and non-zero
+// DASH-27: Reload re-fetches every dashboard widget
 // ============================================================
 test('DASH-27: Dashboard displays real-time data metrics', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(3000);
+  const api = await openDashboard(page);
+  await api.latest('getTopTenStoresFilterBySector');
 
-  // Look for numeric values/stats on the dashboard
-  const stats = page.locator('[class*="stat"], [class*="metric"], [class*="count"], h3, h4');
-  const count = await stats.count();
-  console.log(`ℹ️ Dashboard stat elements found: ${count}`);
+  const endpoints = ['getAccountsPerBrand', 'getAccountsPerBranch', 'getStoreStatus', 'getNotifications', 'getTopTenStoresFilterBySector'];
+  const before = Object.fromEntries(endpoints.map((endpoint) => [endpoint, api.count(endpoint)]));
 
-  if (count > 0) {
-    const firstStatText = await stats.first().innerText();
-    console.log(`ℹ️ First stat text: "${firstStatText}"`);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(page.locator('h4.page-header', { hasText: 'Dashboard' })).toBeVisible({ timeout: PAGE_READY_TIMEOUT });
+
+  for (const endpoint of endpoints) {
+    await api.latest(endpoint, () => api.count(endpoint) > before[endpoint]);
   }
 
-  expect(count).toBeGreaterThan(0);
-  console.log('✅ DASH-27 PASSED: Dashboard metrics are displayed.');
+  // The re-rendered widgets reflect the fresh responses.
+  const brand = await api.latest('getAccountsPerBrand');
+  await expect(
+    page.locator('app-counter-card').filter({ hasText: 'Number of Accounts per Brand' }).locator('.card-amount-values')
+  ).toHaveText(String(brand.body));
+  const top = await api.latest('getTopTenStoresFilterBySector');
+  await expectTopListMatchesApi(page, TOP_LISTS[0], top.body.TopTenRestaurants);
+
+  console.log('DASH-27 PASSED: All widgets were re-fetched and re-rendered after reload.');
 });
 
 // ============================================================
-// DASH-28: Dashboard Page Refresh Maintains Session
-// ============================================================
-// Checks: After refreshing the page, does the user remain logged in
-// and the dashboard remains accessible without re-login?
+// DASH-28: Page Refresh Maintains Session
 // ============================================================
 test('DASH-28: Page refresh maintains user session and dashboard access', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openDashboard(page);
 
-  const urlBefore = page.url();
-  console.log(`ℹ️ URL before refresh: ${urlBefore}`);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(page.locator('h4.page-header', { hasText: 'Dashboard' })).toBeVisible({ timeout: PAGE_READY_TIMEOUT });
 
-  // Refresh the page
-  await page.reload();
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  expect(page.url()).toContain('#/home/dashboard');
+  expect(page.url()).not.toContain('signin');
+  expect(await page.evaluate(() => localStorage.getItem('currentUser'))).not.toBeNull();
 
-  const urlAfter = page.url();
-  console.log(`ℹ️ URL after refresh: ${urlAfter}`);
-
-  // Should still be on dashboard page
-  expect(urlAfter).toContain('dashboard');
-  
-  // Should not be redirected to login
-  expect(urlAfter).not.toContain('signin');
-
-  console.log('✅ DASH-28 PASSED: Session maintained after page refresh.');
+  console.log('DASH-28 PASSED: Session maintained after page refresh.');
 });
 
 // ============================================================
-// DASH-29: Notification Bell / Alert Center
+// DASH-29: Profile avatar shows the signed-in user's initial
 // ============================================================
-// Checks: Is there a notification/alert bell icon in the header?
-// Can the user click it to see notifications?
+// (The header has no notification bell; notifications are shown in
+// the New Notifications card, covered by DASH-21.)
 // ============================================================
-test('DASH-29: Notification bell/alerts icon is present in header', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+test('DASH-29: Profile avatar shows the signed-in user initial', async ({ page }) => {
+  await openDashboard(page);
 
-  // Look for notification bell icon
-  const notificationBell = page.locator(
-    '[class*="notification"], [class*="bell"], ' +
-    'mat-icon:has-text("notifications"), mat-icon:has-text("notifications_active"), ' +
-    'mat-icon:has-text("mail"), button:has(mat-icon)'
-  ).first();
-
-  const bellVisible = await notificationBell.isVisible().catch(() => false);
-  console.log(`ℹ️ Notification bell visible: ${bellVisible}`);
-
-  if (bellVisible) {
-    await notificationBell.click();
-    await page.waitForTimeout(1000);
-    console.log('✅ DASH-29 PASSED: Notification bell is clickable.');
-  } else {
-    console.log('⚠️ DASH-29 INFO: Notification bell not found on the dashboard.');
-  }
-});
-
-// ============================================================
-// DASH-30: Quick Stats Card Click Navigation
-// ============================================================
-// Checks: Are the stat cards clickable?
-// Do they navigate to the corresponding page/section?
-// ============================================================
-test('DASH-30: Dashboard stat cards are clickable and navigable', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(3000);
-
-  // Try to find and click a stat card
-  const statCard = page.locator('[class*="card"], [class*="stat-box"], [class*="metric"]').first();
-  const cardVisible = await statCard.isVisible().catch(() => false);
-
-  if (cardVisible) {
-    const initialUrl = page.url();
-    await statCard.click();
-    await page.waitForLoadState('networkidle');
-    await page.waitForTimeout(1500);
-    
-    const newUrl = page.url();
-    if (newUrl !== initialUrl) {
-      console.log(`✅ DASH-30 PASSED: Stat card navigated to: ${newUrl}`);
-    } else {
-      console.log('ℹ️ DASH-30 INFO: Stat card did not navigate to a new page.');
+  // The avatar letter is the first letter of the signed-in user's first name.
+  const firstName = await page.evaluate(() => {
+    const raw = localStorage.getItem('firstname');
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
     }
-  } else {
-    console.log('⚠️ DASH-30 SKIPPED: No stat cards found on dashboard.');
-  }
+  });
+  expect(firstName, 'first name should be stored after login').toBeTruthy();
+  const initial = String(firstName).trim().charAt(0).toUpperCase();
+
+  await expect(page.locator('li.user_profile .profile-img-letter')).toHaveText(initial);
+
+  console.log(`DASH-29 PASSED: Avatar initial "${initial}" matches the logged-in user's first name.`);
 });
 
 // ============================================================
-// DASH-31: Dashboard Search / Filter Functionality
+// DASH-30: Top 30 Restaurants ranking
 // ============================================================
-// Checks: Is there a search or filter input on the dashboard?
-// Can the user interact with it?
+// The list is a ranking: at most 30 entries, sorted by order count
+// from highest to lowest, every count a positive integer.
+// ============================================================
+test('DASH-30: Top 30 Restaurants list is ranked by order count', async ({ page }) => {
+  const api = await openDashboard(page);
+  const response = await api.latest('getTopTenStoresFilterBySector');
+  await expectTopListMatchesApi(page, TOP_LISTS[0], response.body.TopTenRestaurants);
+
+  const rows = await readTopList(page, TOP_LISTS[0].card);
+  expect(rows.length).toBeLessThanOrEqual(30);
+  for (const row of rows) {
+    expect(row.name.length, 'every row has a store name').toBeGreaterThan(0);
+    expect(Number.isInteger(row.count) && row.count > 0, `count for ${row.name} should be a positive integer`).toBe(true);
+  }
+  const counts = rows.map((row) => row.count);
+  expect(counts).toEqual([...counts].sort((a, b) => b - a));
+
+  console.log(`DASH-30 PASSED: ${rows.length} restaurants ranked by order count.`);
+});
+
+// ============================================================
+// DASH-31: Search button re-applies the current filter
 // ============================================================
 test('DASH-31: Dashboard search/filter functionality is available', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  const api = await openDashboard(page);
+  await api.latest('getTopTenStoresFilterBySector');
 
-  // Look for search input
-  const searchInput = page.locator(
-    'input[placeholder*="Search" i], input[placeholder*="Filter" i], ' +
-    'input[type="search"], [class*="search"] input'
-  ).first();
+  // Pick a non-default filter, then use the toolbar Search button.
+  await clickWhenReady(page.locator('.btn-filter button', { hasText: 'Week' }));
+  await api.latest('getTopTenStoresFilterBySector', (call) => call.requestBody?.DateReqType === 'Week');
 
-  const searchVisible = await searchInput.isVisible().catch(() => false);
-  console.log(`ℹ️ Search input visible: ${searchVisible}`);
+  const searchBtn = page.locator('app-listing-panel button[mattooltip="Search"]');
+  await expect(searchBtn).toBeVisible();
+  const before = api.count('getTopTenStoresFilterBySector');
+  await clickWhenReady(searchBtn);
 
-  if (searchVisible) {
-    await searchInput.fill('test');
-    await page.waitForTimeout(1000);
-    console.log('✅ DASH-31 PASSED: Search functionality is available and responsive.');
-  } else {
-    console.log('⚠️ DASH-31 INFO: No search/filter input found on dashboard.');
-  }
+  const response = await api.latest('getTopTenStoresFilterBySector', () => api.count('getTopTenStoresFilterBySector') > before);
+  expect(response.requestBody.DateReqType).toBe('Week');
+  expect(response.requestBody.DateRange).toBe(expectedQuickRange('Week'));
+  await expect(page.locator('.btn-filter button', { hasText: 'Week' })).toHaveClass(/btn-primary/);
+  await expectTopListMatchesApi(page, TOP_LISTS[0], response.body.TopTenRestaurants);
+
+  console.log('DASH-31 PASSED: Search re-queried the lists with the active Week filter.');
 });
 
 // ============================================================
-// DASH-32: Dashboard Export / Download Data
+// DASH-32: Custom date range from the calendar
 // ============================================================
-// Checks: Is there an export or download button on the dashboard?
+// Picks the 1st..10th of the previous month from the range picker.
+// The lists are re-queried with DateReqType "Day" and exactly that
+// window, the quick-filter buttons are de-selected, and the lists
+// re-render with the new data.
 // ============================================================
-test('DASH-32: Dashboard export/download functionality is available', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+test('DASH-32: Custom date range from the calendar filters the Top 30 lists', async ({ page }) => {
+  const api = await openDashboard(page);
+  await api.latest('getTopTenStoresFilterBySector');
 
-  // Look for export button
-  const exportBtn = page.locator(
-    'button:has-text("Export"), button:has-text("Download"), button:has-text("CSV"), ' +
-    'button:has-text("PDF"), mat-icon:has-text("download"), mat-icon:has-text("get_app")'
-  ).first();
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const end = new Date(now.getFullYear(), now.getMonth() - 1, 10);
 
-  const exportVisible = await exportBtn.isVisible().catch(() => false);
-  console.log(`ℹ️ Export button visible: ${exportVisible}`);
+  await clickWhenReady(page.locator('app-listing-panel mat-datepicker-toggle button'));
+  const calendar = page.locator('mat-calendar');
+  await expect(calendar).toBeVisible();
+  await clickWhenReady(calendar.locator('.mat-calendar-previous-button'));
+  await expect(calendar.locator('.mat-calendar-period-button')).toHaveText(calendarLabel(start));
 
-  if (exportVisible) {
-    console.log('✅ DASH-32 PASSED: Export/Download functionality is available.');
-  } else {
-    console.log('⚠️ DASH-32 INFO: No export/download button found on dashboard.');
+  const day = (n) => calendar.locator('.mat-calendar-body-cell-content').filter({ hasText: new RegExp(`^\\s*${n}\\s*$`) }).first();
+  const before = api.count('getTopTenStoresFilterBySector');
+  await clickWhenReady(day(1));
+  await clickWhenReady(day(10));
+  await expect(calendar).toBeHidden();
+
+  await expect(page.locator('app-listing-panel input[formcontrolname="start"]')).toHaveValue(fmtInputDate(start));
+  await expect(page.locator('app-listing-panel input[formcontrolname="end"]')).toHaveValue(fmtInputDate(end));
+
+  const response = await api.latest('getTopTenStoresFilterBySector', (call) => call.requestBody?.DateReqType === 'Day' && api.count('getTopTenStoresFilterBySector') > before);
+  expect(response.requestBody.DateRange).toBe(`${fmtApiDate(start)}-${fmtApiDate(end)}`);
+
+  for (const name of ['Today', 'Week', 'Month']) {
+    await expect(page.locator('.btn-filter button', { hasText: name })).not.toHaveClass(/btn-primary/);
   }
+  for (const list of TOP_LISTS) {
+    await expectTopListMatchesApi(page, list, response.body[list.apiKey]);
+  }
+
+  console.log(`DASH-32 PASSED: Custom range ${response.requestBody.DateRange} applied.`);
 });
 
 // ============================================================
-// DASH-33: Dashboard Responsive Design - Mobile View
+// DASH-33: Responsive Design - Mobile View
 // ============================================================
-// Checks: Does the dashboard adapt to mobile viewport?
-// Are elements still accessible on smaller screens?
+// On a phone-sized viewport the left sidebar is moved off-canvas
+// (body gets "ls-closed") while the dashboard content stays usable.
 // ============================================================
 test('DASH-33: Dashboard is responsive on mobile viewport', async ({ page }) => {
-  // Set mobile viewport
+  await openDashboard(page);
+
   await page.setViewportSize({ width: 375, height: 667 });
+  await expect(page.locator('body')).toHaveClass(/\bls-closed\b/);
+  await expect
+    .poll(async () => {
+      const box = await page.locator('#leftsidebar').boundingBox();
+      return box ? box.x + box.width : 0;
+    }, { message: 'sidebar should be moved off-canvas on mobile' })
+    .toBeLessThanOrEqual(0);
 
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await expect(page.locator('h4.page-header', { hasText: 'Dashboard' })).toBeVisible();
+  await expect(page.locator('app-counter-card').first()).toBeVisible();
 
-  // Check if sidebar is hidden/collapsed on mobile
-  const sidebar = page.locator('.sidebar');
-  const sidebarVisible = await sidebar.isVisible().catch(() => false);
-
-  // Check for mobile menu toggle
-  const hamburgerBtn = page.locator('button.sidemenu-collapse, [class*="menu-toggle"]').first();
-  const hamburgerVisible = await hamburgerBtn.isVisible().catch(() => false);
-
-  console.log(`ℹ️ Sidebar visible on mobile: ${sidebarVisible}`);
-  console.log(`ℹ️ Hamburger menu visible on mobile: ${hamburgerVisible}`);
-
-  // At least some content should be visible
-  const bodyContent = await page.innerText('body');
-  expect(bodyContent.length).toBeGreaterThan(50);
-
-  // Reset viewport
+  // Back to desktop: sidebar is restored.
   await page.setViewportSize({ width: 1280, height: 720 });
+  await expect(page.locator('body')).not.toHaveClass(/\bls-closed\b/);
+  await expect(page.locator('#leftsidebar a.menu-top', { hasText: 'Dashboard' })).toBeVisible();
 
-  console.log('✅ DASH-33 PASSED: Dashboard is responsive on mobile.');
+  console.log('DASH-33 PASSED: Sidebar goes off-canvas on mobile and returns on desktop.');
 });
 
 // ============================================================
-// DASH-34: Dashboard Keyboard Accessibility
-// ============================================================
-// Checks: Can the user navigate dashboard using Tab key?
-// Are focusable elements in logical order?
+// DASH-34: Keyboard Accessibility
 // ============================================================
 test('DASH-34: Dashboard supports keyboard navigation (Tab key)', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openDashboard(page);
 
-  // Focus on first focusable element
-  await page.keyboard.press('Tab');
-  const activeElement = await page.evaluate(() => document.activeElement?.tagName?.toLowerCase());
-  console.log(`ℹ️ Active element after first Tab: ${activeElement}`);
-
-  // Tab through several elements
-  for (let i = 0; i < 5; i++) {
+  const focused = [];
+  for (let i = 0; i < 6; i += 1) {
     await page.keyboard.press('Tab');
+    focused.push(
+      await page.evaluate(() => {
+        const el = document.activeElement;
+        return el ? `${el.tagName.toLowerCase()}|${(el.textContent || el.getAttribute('aria-label') || '').trim().slice(0, 30)}` : '';
+      })
+    );
   }
+  console.log(`Focus order: ${focused.join(' -> ')}`);
 
-  const finalActive = await page.evaluate(() => {
-    const active = document.activeElement;
-    return {
-      tagName: active?.tagName?.toLowerCase() || '',
-      focusableCount: document.querySelectorAll(
-        'button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-      ).length,
-    };
-  });
-  console.log(`ℹ️ Active element after 6 Tabs: ${finalActive.tagName}`);
+  const interactive = focused.filter((entry) => /^(a|button|input|select|textarea|mat-select)\|/.test(entry));
+  expect(interactive.length, 'Tab should move focus through interactive elements').toBeGreaterThanOrEqual(5);
+  expect(new Set(focused).size, 'focus should advance to different elements').toBeGreaterThan(3);
 
-  expect(finalActive.focusableCount).toBeGreaterThan(0);
-  expect(finalActive.tagName).toMatch(/^(button|a|input|select|textarea|body)$/);
-
-  console.log('✅ DASH-34 PASSED: Keyboard navigation is functional.');
+  console.log('DASH-34 PASSED: Keyboard navigation is functional.');
 });
 
 // ============================================================
-// DASH-35: Dashboard Performance - Page Load Time
-// ============================================================
-// Checks: How long does the dashboard take to load?
-// Should be under 5 seconds for good UX
+// DASH-35: Performance - Page Load Time
 // ============================================================
 test('DASH-35: Dashboard loads within acceptable time', async ({ page }) => {
+  const api = trackDashboardApi(page);
   await loginToApp(page);
 
   const startTime = Date.now();
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('domcontentloaded');
-  await expect(page.locator('body')).toContainText(/Dashboard|Campaigns|Orders|Top 10/i, { timeout: 30000 });
+  await page.goto(`${BASE_URL}/#/home/reports`, { waitUntil: 'domcontentloaded' });
+  await page.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('h4.page-header', { hasText: 'Dashboard' })).toBeVisible({ timeout: 30000 });
+  await api.latest('getStoreStatus', () => true, 30000);
+  await expect(statusValue(page, 'OPENED')).toBeVisible({ timeout: 30000 });
+  const loadTime = Date.now() - startTime;
 
-  const endTime = Date.now();
-  const loadTime = endTime - startTime;
-  const loadTimeSeconds = (loadTime / 1000).toFixed(2);
+  console.log(`Dashboard load time: ${(loadTime / 1000).toFixed(2)}s`);
+  // Tolerant of shared demo-environment variance while still catching a stalled page.
+  expect(loadTime).toBeLessThan(45000);
 
-  console.log(`ℹ️ Dashboard load time: ${loadTimeSeconds}s`);
-
-  // Keep the check tolerant of live UAT/API variance while still catching a stalled page.
-  expect(loadTime).toBeLessThan(30000);
-
-  console.log(`✅ DASH-35 PASSED: Dashboard loaded in ${loadTimeSeconds}s.`);
+  console.log('DASH-35 PASSED.');
 });
 
 // ============================================================
-// DASH-36: Dashboard Theme / Dark Mode Toggle
+// DASH-36: Branches Operations percentage bar
 // ============================================================
-// Checks: Is there a theme or dark mode toggle?
-// Does it change the page appearance?
+// (The theme/skin settings panel exists in the DOM but has no visible
+// trigger in this build, so it is not user-reachable and not tested.)
 // ============================================================
-test('DASH-36: Theme/Dark mode toggle is available (if applicable)', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+test('DASH-36: Branches Operations bar shows opened/closed percentages from the API', async ({ page }) => {
+  const api = await openDashboard(page);
+  const status = await api.latest('getStoreStatus');
 
-  // Look for theme toggle button (moon/sun icon or "Dark Mode" text)
-  const themeToggle = page.locator(
-    'button:has(mat-icon:has-text("dark_mode")), button:has(mat-icon:has-text("light_mode")), ' +
-    'button:has(mat-icon:has-text("brightness_4")), button:has(mat-icon:has-text("brightness_7")), ' +
-    'button:has-text("Theme"), label:has-text("Dark Mode")'
-  ).first();
-
-  const themeVisible = await themeToggle.isVisible().catch(() => false);
-  console.log(`ℹ️ Theme toggle visible: ${themeVisible}`);
-
-  if (themeVisible) {
-    const htmlBefore = await page.evaluate(() => document.documentElement.className);
-    console.log(`ℹ️ HTML class before toggle: "${htmlBefore}"`);
-
-    await themeToggle.click();
-    await page.waitForTimeout(500);
-
-    const htmlAfter = await page.evaluate(() => document.documentElement.className);
-    console.log(`ℹ️ HTML class after toggle: "${htmlAfter}"`);
-
-    console.log('✅ DASH-36 PASSED: Theme toggle is functional.');
-  } else {
-    console.log('⚠️ DASH-36 INFO: No theme/dark mode toggle found on dashboard.');
+  const bars = page.locator('.progress [role="progressbar"]');
+  const expected = [];
+  for (const key of ['OpenedPercentage', 'ClosedPercentage']) {
+    if (status.body[key] > 0) expected.push(`${Math.round(status.body[key])}%`);
   }
+  expect(expected.length, 'store status API should report at least one non-zero percentage').toBeGreaterThan(0);
+  await expect.poll(async () => (await bars.allInnerTexts()).map((text) => text.trim())).toEqual(expected);
+
+  await expect(page.getByText('Opened Stores')).toBeVisible();
+  await expect(page.getByText('Busy Stores')).toBeVisible();
+  await expect(page.getByText('Closed Stores')).toBeVisible();
+
+  console.log(`DASH-36 PASSED: progress bar ${expected.join(' / ')} matches API.`);
 });
 
 // ============================================================
-// DASH-37: Dashboard Breadcrumb Navigation
-// ============================================================
-// Checks: Are breadcrumbs visible on the dashboard?
-// Can the user navigate back using breadcrumbs?
+// DASH-37: Breadcrumb / page header
 // ============================================================
 test('DASH-37: Breadcrumb navigation is present and functional', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+  await openDashboard(page);
 
-  // Look for breadcrumb elements
-  const breadcrumbs = page.locator(
-    '[class*="breadcrumb"], nav[aria-label="Breadcrumb"], ' +
-    'ol > li, .nav-breadcrumb'
-  );
+  const breadcrumb = page.locator('app-dashboard-panel ul.breadcrumb');
+  await expect(breadcrumb).toBeVisible();
+  await expect(breadcrumb.locator('li.breadcrumb-item')).toHaveCount(1);
+  await expect(breadcrumb.locator('h4.page-header')).toHaveText('Dashboard');
 
-  const breadcrumbCount = await breadcrumbs.count();
-  console.log(`ℹ️ Breadcrumb elements found: ${breadcrumbCount}`);
-
-  if (breadcrumbCount > 0) {
-    const breadcrumbText = await breadcrumbs.first().innerText();
-    console.log(`ℹ️ Breadcrumb text: "${breadcrumbText}"`);
-    console.log('✅ DASH-37 PASSED: Breadcrumb navigation is available.');
-  } else {
-    console.log('⚠️ DASH-37 INFO: No breadcrumb navigation found on dashboard.');
-  }
+  console.log('DASH-37 PASSED: Breadcrumb shows the Dashboard page header.');
 });
 
 // ============================================================
-// DASH-38: Dashboard Quick Links / Shortcuts
+// DASH-38: Brand logo returns to the dashboard
 // ============================================================
-// Checks: Are there quick action buttons/links on the dashboard?
-// (e.g., Create Campaign, Add Store, etc.)
-// ============================================================
-test('DASH-38: Quick action links/shortcuts are available', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+test('DASH-38: Brand logo link returns to the dashboard from another page', async ({ page }) => {
+  await openDashboard(page);
 
-  // Look for common action buttons
-  const actionButtons = page.locator(
-    'button:has-text("Create"), button:has-text("Add"), button:has-text("New"), ' +
-    'button:has-text("Start"), a:has-text("Create"), a:has-text("Add")'
-  );
+  await clickWhenReady(page.locator('#leftsidebar a[href="#/home/reports"]'));
+  await page.waitForURL(/#\/home\/reports/, { timeout: 30000 });
 
-  const actionCount = await actionButtons.count();
-  console.log(`ℹ️ Quick action buttons found: ${actionCount}`);
+  await clickWhenReady(page.locator('a.navbar-brand'));
+  await page.waitForURL(/#\/home\/dashboard/, { timeout: 30000 });
+  await expect(page.locator('h4.page-header', { hasText: 'Dashboard' })).toBeVisible({ timeout: PAGE_READY_TIMEOUT });
 
-  if (actionCount > 0) {
-    const firstActionText = await actionButtons.first().innerText();
-    console.log(`ℹ️ First action: "${firstActionText}"`);
-    console.log('✅ DASH-38 PASSED: Quick action links are available.');
-  } else {
-    console.log('⚠️ DASH-38 INFO: No quick action buttons/links found on dashboard.');
-  }
+  console.log('DASH-38 PASSED: Brand logo navigates back to the dashboard.');
 });
 
 // ============================================================
-// DASH-39: Dashboard Footer Information
+// DASH-39: Every top-level sidebar link routes to its page
 // ============================================================
-// Checks: Is there a footer with app information or links?
-// (version, copyright, support links, etc.)
-// ============================================================
-test('DASH-39: Dashboard footer contains app information', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
+test('DASH-39: Every top-level sidebar link routes to its own page', async ({ page }) => {
+  test.setTimeout(420000);
+  await openDashboard(page);
 
-  // Scroll to bottom to ensure footer is visible
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  await page.waitForTimeout(500);
+  const links = await page
+    .locator('#leftsidebar a.menu-top:not(.menu-toggle)')
+    .evaluateAll((anchors) =>
+      anchors
+        .map((a) => ({ href: a.getAttribute('href'), text: (a.textContent || '').replace(/\s+/g, ' ').trim() }))
+        // Logout is also an a.menu-top but has no route (covered by DASH-06).
+        .filter((link) => link.href && link.href.startsWith('#/home/'))
+    );
+  expect(links.length).toBeGreaterThan(10);
 
-  // Look for footer
-  const footer = page.locator('footer, [class*="footer"], [class*="bottom"]').first();
-  const footerVisible = await footer.isVisible().catch(() => false);
-
-  console.log(`ℹ️ Footer visible: ${footerVisible}`);
-
-  if (footerVisible) {
-    const footerText = await footer.innerText();
-    console.log(`ℹ️ Footer content: "${footerText.substring(0, 100)}..."`);
-    console.log('✅ DASH-39 PASSED: Footer information is present.');
-  } else {
-    console.log('⚠️ DASH-39 INFO: No footer found on dashboard.');
+  for (const link of links) {
+    await clickWhenReady(page.locator(`#leftsidebar a.menu-top:not(.menu-toggle)[href="${link.href}"]`));
+    const reached = await page
+      .waitForURL((url) => url.toString().includes(link.href), { timeout: 30000 })
+      .then(() => true)
+      .catch(() => false);
+    expect.soft(reached, `"${link.text}" should route to ${link.href} (got ${page.url()})`).toBe(true);
+    expect.soft(page.url()).not.toContain('signin');
   }
+
+  console.log(`DASH-39 PASSED: ${links.length} sidebar links route correctly.`);
 });
 
 // ============================================================
-// DASH-40: Dashboard Session Timeout / Inactivity
+// DASH-40: Unauthenticated access is redirected to sign-in
 // ============================================================
-// Checks: Does the session timeout or show warning after prolonged inactivity?
-// (May not be applicable for automated tests; info only)
-// ============================================================
-test('DASH-40: Dashboard session timeout handling', async ({ page }) => {
-  await loginToApp(page);
-  await page.goto(DASHBOARD_URL);
-  await page.waitForLoadState('networkidle');
-  await page.waitForTimeout(2000);
-
-  // Simulate inactivity (just wait without interaction)
-  console.log('ℹ️ Simulating inactivity for 5 seconds...');
-  await page.waitForTimeout(5000);
-
-  // Check if user is still logged in
-  const currentUrl = page.url();
-  const isStillLoggedIn = !currentUrl.includes('signin');
-
-  console.log(`ℹ️ Still logged in after inactivity: ${isStillLoggedIn}`);
-
-  if (isStillLoggedIn) {
-    console.log('✅ DASH-40 PASSED: User session maintained during inactivity.');
-  } else {
-    console.log('⚠️ DASH-40 INFO: Session ended due to inactivity.');
+test('DASH-40: Dashboard session timeout handling', async ({ browser }) => {
+  // A brand-new context has no session at all (equivalent to an expired one).
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await page.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
+    await page.waitForURL(/#\/authentication\/signin/, { timeout: 60000 });
+    await expect(page.locator('input[type="password"]').first()).toBeVisible({ timeout: 30000 });
+    await expect(page.locator('h4.page-header', { hasText: 'Dashboard' })).toHaveCount(0);
+  } finally {
+    await context.close();
   }
+
+  console.log('DASH-40 PASSED: Dashboard requires an authenticated session.');
 });
