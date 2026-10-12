@@ -12,6 +12,31 @@ const SCHEME_ROUTES = {
   'Redispatch Rate': '#/home/fare-scheme/redispatch-rate',
   'Speed of Delivery': '#/home/fare-scheme/speed-of-delivery',
 };
+// The unit each scheme's Minimum/Maximum columns and form fields are expressed in.
+const SCHEME_UNITS = {
+  'Average Attendance': 'Days',
+  'Block Count': 'Days',
+  'Number of Fines': 'Fines',
+  'Redispatch Rate': 'Percentage',
+  'Speed of Delivery': 'Minutes',
+};
+export const ALL_SCHEMES = Object.keys(SCHEME_ROUTES);
+
+// Slab weights created by this worker and not yet deleted, per scheme. Lets an afterAll
+// safety net delete exactly the records this run created if a later lifecycle step fails.
+/** @type {Map<string, Set<string>>} */
+const createdSlabWeights = new Map();
+
+/** @param {string} schemeName */
+function createdWeightsFor(schemeName) {
+  if (!createdSlabWeights.has(schemeName)) createdSlabWeights.set(schemeName, new Set());
+  return /** @type {Set<string>} */ (createdSlabWeights.get(schemeName));
+}
+
+/** @param {string} value */
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 export class DriverKpiSlabSchemePage {
   /**
@@ -21,40 +46,31 @@ export class DriverKpiSlabSchemePage {
   constructor(page, schemeName) {
     this.page = page;
     this.schemeName = schemeName;
+    this.unit = SCHEME_UNITS[schemeName] || '';
   }
 
   get pageTitle() {
     return this.page
       .locator('h1, h2, h3, h4, .page-title, .breadcrumb-item')
-      .filter({ hasText: /Driver\s*KPI|KPI\s*Slabs|Slabs/i })
+      .filter({ hasText: new RegExp(`^\\s*${escapeRegExp(this.schemeName)} Slab Scheme\\s*$`, 'i') })
       .first();
   }
 
   get table() {
-    return this.page.locator('mat-table, table, .table-responsive, .ngx-datatable').first();
+    return this.page.locator('table').filter({ visible: true }).first();
   }
 
   get rows() {
-    return this.page.locator('mat-row, tbody tr, .datatable-body-row');
+    return this.page.locator('tbody tr').filter({ visible: true });
   }
 
   get createButton() {
-    return this.page
-      .locator(
-        'button:has-text("Create"), ' +
-        'button:has-text("Add"), ' +
-        'button:has-text("New"), ' +
-        'button:has(mat-icon:has-text("add")), ' +
-        '[role="button"]:has-text("Create"), ' +
-        '[role="button"]:has-text("Add")'
-      )
-      .filter({ visible: true })
-      .first();
+    return this.page.locator('button').filter({ hasText: /^\s*Create\s*$/ }).filter({ visible: true }).first();
   }
 
   activeDialog() {
     return this.page
-      .locator('mat-dialog-container, modal-container, .modal-dialog, [role="dialog"], .swal2-popup')
+      .locator('.modal-dialog, mat-dialog-container, modal-container, [role="dialog"]')
       .filter({ visible: true })
       .last();
   }
@@ -62,9 +78,7 @@ export class DriverKpiSlabSchemePage {
   async goto() {
     await loginToApp(this.page);
     await this.navigateToDriverKpi();
-    await this.page.waitForLoadState('domcontentloaded').catch(() => {});
     await this.waitForReady();
-    await this.selectSchemeFilter();
   }
 
   async navigateToDriverKpi() {
@@ -76,42 +90,42 @@ export class DriverKpiSlabSchemePage {
     }
 
     await this.page.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
-    await this.page.waitForLoadState('domcontentloaded').catch(() => {});
+    await this.openSchemeFromSidebar();
+  }
 
-    const sidebarParent = this.page.locator('.sidebar a, a').filter({ hasText: /Driver\s*KPI\s*Slabs/i }).first();
-    if (await sidebarParent.isVisible().catch(() => false)) {
-      await sidebarParent.scrollIntoViewIfNeeded().catch(() => {});
-      await sidebarParent.click({ force: true });
-      await this.page.waitForLoadState('domcontentloaded').catch(() => {});
-      await this.page.waitForTimeout(1500);
-
-      const schemeLink = this.page
-        .locator('.sidebar a[href*="fare-scheme"], a[href*="fare-scheme"]')
-        .filter({ hasText: new RegExp(this.escapeRegExp(this.schemeName), 'i') })
-        .filter({ visible: true })
-        .first();
-
-      if (await schemeLink.isVisible().catch(() => false)) {
-        await schemeLink.scrollIntoViewIfNeeded().catch(() => {});
-        await schemeLink.click({ force: true });
-        await this.page.waitForLoadState('domcontentloaded').catch(() => {});
-        await this.waitForKpiOrSignin();
-      }
+  /** Opens this scheme's page through the "Driver KPI Slabs" sidebar menu (real clicks). */
+  async openSchemeFromSidebar() {
+    const schemeLink = this.sidebarSchemeLink(this.schemeName);
+    if (!(await schemeLink.isVisible().catch(() => false))) {
+      const parent = this.page.locator('.sidebar a, aside a').filter({ hasText: /Driver\s*KPI\s*Slabs/i }).first();
+      await parent.scrollIntoViewIfNeeded();
+      await parent.click();
     }
+    await expect(schemeLink, `Sidebar should list "${this.schemeName} Slab Scheme" under Driver KPI Slabs.`).toBeVisible({ timeout: 15000 });
+    await schemeLink.scrollIntoViewIfNeeded();
+    await schemeLink.click();
+    await this.waitForKpiOrSignin();
+  }
 
-    if (/dashboard/i.test(this.page.url())) {
-      await goToPage(this.page, schemeRoute || DRIVER_KPI_URL);
-      await this.waitForKpiOrSignin();
-    }
+  /** @param {string} schemeName */
+  sidebarSchemeLink(schemeName) {
+    return this.page
+      .locator('.sidebar a[href*="fare-scheme"], aside a[href*="fare-scheme"]')
+      .filter({ hasText: new RegExp(`^\\s*${escapeRegExp(schemeName)} Slab Scheme\\s*$`, 'i') })
+      .first();
   }
 
   async waitForKpiOrSignin() {
     await this.page
-      .waitForURL((url) => /\/#\/home\/|\/#\/authentication\/signin/i.test(url.toString()), {
-        timeout: 10000,
-      })
+      .waitForURL((url) => /\/#\/home\/|\/#\/authentication\/signin/i.test(url.toString()), { timeout: 10000 })
       .catch(() => {});
     await this.page.waitForLoadState('domcontentloaded').catch(() => {});
+  }
+
+  async waitForNoSpinner() {
+    for (const selector of ['.ngx-spinner-overlay', 'app-page-loader', '.loading-overlay', '.loading-spinner']) {
+      await this.page.locator(selector).first().waitFor({ state: 'hidden', timeout: 15000 }).catch(() => {});
+    }
   }
 
   async waitForReady() {
@@ -119,392 +133,222 @@ export class DriverKpiSlabSchemePage {
     if (/signin/i.test(this.page.url())) {
       await loginToApp(this.page);
       await this.navigateToDriverKpi();
-      await this.waitForKpiOrSignin();
     }
-
-    await expect(this.page).not.toHaveURL(/signin/i, { timeout: 25000 });
-    if (/dashboard/i.test(this.page.url())) {
-      await this.navigateToDriverKpi();
-    }
-    await expect(this.page).not.toHaveURL(/dashboard/i, { timeout: 25000 });
-
-    for (let i = 0; i < 30; i += 1) {
-      const headingText = await this.page
-        .locator('main, app-root, .main-content, .content, .container-fluid')
-        .first()
-        .innerText()
-        .catch(() => '');
-      const titleVisible = await this.pageTitle.isVisible().catch(() => false);
-      const tableVisible = await this.table.isVisible().catch(() => false);
-      const createVisible = await this.createButton.isVisible().catch(() => false);
-
-      if (titleVisible || tableVisible || createVisible || /KPI\s*Slabs|Slab\s*Scheme|Min|Max|Weight/i.test(headingText)) return;
-      await this.page.waitForTimeout(500);
-    }
-
-    await expect(this.page.locator('body')).toContainText(/KPI\s*Slabs|Slab\s*Scheme|Min|Max|Weight/i, { timeout: 10000 });
+    await expect(this.page).not.toHaveURL(/signin|dashboard/i, { timeout: 25000 });
+    await expect(this.pageTitle, `"${this.schemeName} Slab Scheme" heading should be visible.`).toBeVisible({ timeout: 45000 });
+    await expect(this.table).toBeVisible({ timeout: 30000 });
+    await this.waitForNoSpinner();
   }
 
   async verifyPageLoaded() {
     await this.waitForReady();
-    const visibleShells = await this.page
-      .locator('mat-table, table, .table-responsive, button, mat-select, input')
-      .filter({ visible: true })
-      .count();
-    expect(visibleShells).toBeGreaterThan(0);
-  }
-
-  async selectSchemeFilter() {
-    if (/\/#\/home\/fare-scheme\//i.test(this.page.url())) {
-      await this.page.waitForLoadState('domcontentloaded').catch(() => {});
-      return;
-    }
-
-    const selected = await this.selectDropdown(this.page.locator('body'), /kpi|scheme|type/i, this.schemeName);
-    if (!selected) {
-      console.log(`INFO: Scheme filter for "${this.schemeName}" was not visible; continuing with current table.`);
-    }
-    await this.page.waitForTimeout(1000);
+    await expect(this.createButton, `${this.schemeName} Create button should be visible.`).toBeVisible({ timeout: 20000 });
   }
 
   /**
-   * @param {import('@playwright/test').Locator} context
-   * @param {RegExp | string | null} label
-   * @param {string | number} option
+   * The slab table shows this scheme's Minimum/Maximum unit columns, Weight and Action,
+   * and every existing slab row offers Edit and Delete buttons.
    */
-  async selectDropdown(context, label = null, option = 0) {
-    const dropdowns = context.locator('mat-select, [role="combobox"]').filter({ visible: true });
-    const count = await dropdowns.count().catch(() => 0);
+  async verifyTableStructure() {
+    await this.verifyPageLoaded();
+    const headers = (await this.table.locator('th').allInnerTexts()).map((text) => text.replace(/\s+/g, ' ').trim());
+    expect(headers, `${this.schemeName} table columns`).toEqual([`Minimum ${this.unit}`, `Maximum ${this.unit}`, 'Weight', 'Action']);
 
+    const count = await this.rows.count();
     for (let index = 0; index < count; index += 1) {
-      const dropdown = dropdowns.nth(index);
-      if (!(await dropdown.isEnabled().catch(() => true))) continue;
-
-      if (label) {
-        const fieldText = await dropdown.locator('xpath=ancestor::mat-form-field[1]').innerText().catch(() => '');
-        const dropdownText = [
-          fieldText,
-          await dropdown.innerText().catch(() => ''),
-          await dropdown.getAttribute('formcontrolname').catch(() => ''),
-          await dropdown.getAttribute('aria-label').catch(() => ''),
-          await dropdown.getAttribute('placeholder').catch(() => ''),
-        ].filter(Boolean).join(' ');
-        const labelMatched = label instanceof RegExp
-          ? label.test(dropdownText)
-          : this.normalize(dropdownText).includes(this.normalize(label));
-        if (!labelMatched) continue;
-      }
-
-      await dropdown.scrollIntoViewIfNeeded().catch(() => {});
-      await dropdown.click({ force: true }).catch(() => {});
-      await this.page.waitForTimeout(700);
-
-      const options = this.page.locator('mat-option, .mat-option, [role="option"]').filter({ visible: true });
-      const optionCount = await options.count().catch(() => 0);
-      const selectable = [];
-
-      for (let optionNumber = 0; optionNumber < optionCount; optionNumber += 1) {
-        const item = options.nth(optionNumber);
-        const text = ((await item.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-        const className = (await item.getAttribute('class').catch(() => '')) || '';
-        const ariaDisabled = await item.getAttribute('aria-disabled').catch(() => null);
-        const disabled = ariaDisabled === 'true' || /disabled/.test(className);
-        const placeholder = !text || /select|choose|loading|no data|no records|no results/i.test(text);
-        if (!disabled && !placeholder) selectable.push({ item, text });
-      }
-
-      const target = typeof option === 'string'
-        ? selectable.find(({ text }) => this.normalize(text).includes(this.normalize(option)))
-        : selectable[option] || selectable[0];
-
-      if (target) {
-        await target.item.click({ force: true }).catch(() => {});
-        await this.page.waitForTimeout(500);
-        return true;
-      }
-
-      await this.page.keyboard.press('Escape').catch(() => {});
+      const row = this.rows.nth(index);
+      await expect(row.locator('button[mattooltip="Edit"]'), `Slab row ${index + 1} should have an Edit button.`).toBeVisible();
+      await expect(row.locator('button[mattooltip="Delete"]'), `Slab row ${index + 1} should have a Delete button.`).toBeVisible();
     }
+    console.log(`INFO: ${this.schemeName} currently has ${count} slab row(s).`);
+  }
 
-    return false;
+  /** The three numeric fields of the create/edit dialog: minimum, maximum, weight. */
+  /** @param {import('@playwright/test').Locator} dialog */
+  slabInputs(dialog) {
+    const inputs = dialog.locator('input[type="number"]');
+    return { min: inputs.nth(0), max: inputs.nth(1), weight: inputs.nth(2) };
   }
 
   /**
-   * @param {import('@playwright/test').Locator} context
-   * @param {string[]} selectors
+   * @param {import('@playwright/test').Locator} input
    * @param {string} value
    */
-  async fillFirstVisible(context, selectors, value) {
-    for (const selector of selectors) {
-      const input = context.locator(selector).filter({ visible: true }).first();
-      if (!(await input.isVisible().catch(() => false))) continue;
-      if (!(await input.isEditable().catch(() => true))) continue;
-
-      await input.scrollIntoViewIfNeeded().catch(() => {});
-      await input.click({ clickCount: 3, force: true }).catch(() => {});
-      await input.fill(value).catch(async () => {
-        await input.pressSequentially(value, { delay: 20 }).catch(() => {});
-      });
-      await input.dispatchEvent('input').catch(() => {});
-      return true;
-    }
-    return false;
+  async setNumber(input, value) {
+    await input.fill(value);
+    await expect(input).toHaveValue(value);
   }
 
-  /**
-   * @param {import('@playwright/test').Locator} context
-   * @param {RegExp} labelPattern
-   */
-  async enabledButton(context, labelPattern) {
-    const buttons = context
-      .locator('button, [role="button"]')
-      .filter({ visible: true })
-      .filter({ hasText: labelPattern });
-    const count = await buttons.count().catch(() => 0);
-
-    for (let index = 0; index < count; index += 1) {
-      const button = buttons.nth(index);
-      if (await button.isEnabled().catch(() => false)) return button;
-    }
-
-    return buttons.first();
-  }
-
-  /** @param {string | number} weight */
-  async fillSlabForm(weight = '5') {
+  async openCreateDialog() {
+    await this.createButton.click();
     const dialog = this.activeDialog();
-    const context = await dialog.isVisible().catch(() => false) ? dialog : this.page.locator('body');
-
-    // This form has no scheme/type dropdowns in practice (confirmed live) -
-    // only Minimum Days, Maximum Days, and Weight number fields. These
-    // selectDropdown calls are harmless no-ops if no dropdown matches.
-    await this.selectDropdown(context, /kpi|scheme/i, this.schemeName);
-    await this.selectDropdown(context, /type/i, 0);
-
-    await this.fillFirstVisible(context, [
-      'input[formcontrolname*="min" i]',
-      'input[placeholder*="Min" i]',
-      'mat-form-field:has-text("Min") input',
-      'input[type="number"]',
-    ], '1');
-
-    await this.fillFirstVisible(context, [
-      'input[formcontrolname*="max" i]',
-      'input[placeholder*="Max" i]',
-      'mat-form-field:has-text("Max") input',
-      'input[type="number"]',
-    ], '10');
-
-    await this.fillFirstVisible(context, [
-      'input[formcontrolname*="weight" i]',
-      'input[placeholder*="Weight" i]',
-      'mat-form-field:has-text("Weight") input',
-      'input[type="number"]',
-    ], String(weight));
+    await expect(dialog, `${this.schemeName} create dialog should open.`).toBeVisible({ timeout: 12000 });
+    await expect(dialog).toContainText(`Create ${this.schemeName} Slab Scheme`);
+    return dialog;
   }
 
   /**
-   * Weight is the only field a test can use to identify its own record
-   * (Min/Max are fixed at 1/10) - find the row whose Weight cell is
-   * exactly this value.
+   * Exactly the row whose Weight cell equals this value (a substring match could hit
+   * another slab whose weight merely contains these digits).
    * @param {string | number} weight
    */
   findRowByWeight(weight) {
-    return this.rows.filter({ hasText: String(weight) });
-  }
-
-  async verifyFiltersSearchAndPagination() {
-    await this.selectSchemeFilter();
-
-    const searchInput = this.page
-      .locator('input[placeholder*="Search" i], input[aria-label*="search" i], input[matinput], input.mat-input-element')
-      .filter({ visible: true })
-      .first();
-    if (await searchInput.isVisible().catch(() => false)) {
-      await searchInput.click({ force: true });
-      await searchInput.fill(this.schemeName.split(' ')[0]).catch(() => {});
-      await this.clickSearchButton();
-      await this.page.waitForTimeout(1500);
-      await searchInput.fill('').catch(() => {});
-      await this.clickSearchButton();
-    }
-
-    await this.verifyPagination();
-    await this.verifyPageLoaded();
-  }
-
-  async clickSearchButton() {
-    const searchButton = this.page
-      .locator('button[aria-label*="search" i], button:has(mat-icon:has-text("search")), button:has-text("Search")')
-      .filter({ visible: true })
-      .first();
-    if (await searchButton.isVisible().catch(() => false) && await searchButton.isEnabled().catch(() => false)) {
-      await searchButton.click({ force: true }).catch(() => {});
-    } else {
-      await this.page.keyboard.press('Enter').catch(() => {});
-    }
-  }
-
-  async verifyPagination() {
-    const nextButton = this.page
-      .locator('button[aria-label*="Next" i], .ngx-pagination li.pagination-next, li.pagination-next, li.page-item:has-text("Next")')
-      .filter({ visible: true })
-      .first();
-
-    if (!(await nextButton.isVisible().catch(() => false))) {
-      console.log(`INFO: Pagination next button not visible for ${this.schemeName}; table may have one page.`);
-      return;
-    }
-
-    const disabled = await nextButton.evaluate((node) => {
-      return node.hasAttribute('disabled') ||
-        node.getAttribute('aria-disabled') === 'true' ||
-        /disabled/.test(node.getAttribute('class') || '');
-    }).catch(() => true);
-
-    if (disabled) {
-      console.log(`INFO: Pagination next button disabled for ${this.schemeName}; single page result.`);
-      return;
-    }
-
-    await nextButton.click({ force: true }).catch(() => {});
-    await this.page.waitForTimeout(1500);
-    await expect(this.page.locator('body')).toBeVisible();
+    return this.rows.filter({
+      has: this.page.locator('td:nth-child(3)', { hasText: new RegExp(`^\\s*${escapeRegExp(String(weight))}\\s*$`) }),
+    });
   }
 
   /**
-   * Creates a slab with the given (unique) weight so it can be
-   * identified precisely by later view/edit/delete steps, and verifies
-   * it actually appears in the table afterward - not just that the
-   * create dialog opened and closed.
+   * Creates a slab (Min 1, Max 10) with the given run-stamped weight so later steps can
+   * identify it precisely, and verifies the new row with all three values.
    * @param {string | number} weight
    */
   async verifyCreateSlabFlow(weight) {
-    await expect(this.createButton, `${this.schemeName} Create button should be visible.`).toBeVisible({ timeout: 20000 });
+    await expect(this.findRowByWeight(weight), `Run-stamped weight ${weight} must not already exist in ${this.schemeName}.`).toHaveCount(0);
+    const dialog = await this.openCreateDialog();
+    const { min, max, weight: weightInput } = this.slabInputs(dialog);
+    await this.setNumber(min, '1');
+    await this.setNumber(max, '10');
+    await this.setNumber(weightInput, String(weight));
 
-    // A force click does not trigger this button's Angular click handler
-    // (confirmed live - same pattern seen elsewhere in this app's custom
-    // components); a real click is required.
-    await this.createButton.click();
-    await this.page.waitForTimeout(1500);
-
-    const dialog = this.activeDialog();
-    await expect(dialog, `${this.schemeName} create dialog should open.`).toBeVisible({ timeout: 12000 });
-
-    await this.fillSlabForm(weight);
-
-    const submitButton = await this.enabledButton(dialog, /^(Create|Save|Submit|Add)$/i);
-    await expect(submitButton, `${this.schemeName} create submit button should be visible.`).toBeVisible({ timeout: 10000 });
-    await expect(submitButton, `${this.schemeName} create submit button should be enabled once required fields are filled.`).toBeEnabled({ timeout: 10000 });
-
-    await submitButton.click();
-    await this.page.waitForTimeout(2000);
+    const submit = dialog.getByRole('button', { name: /^Create$/i });
+    await expect(submit, `${this.schemeName} Create should be enabled once the fields are filled.`).toBeEnabled({ timeout: 10000 });
+    const createResponse = this.page
+      .waitForResponse((response) => /\/create$/i.test(response.url().split('?')[0]) && response.request().method() === 'POST', { timeout: 30000 })
+      .catch(() => null);
+    await submit.click();
+    const response = await createResponse;
+    expect(response, `${this.schemeName} Create should call its create API.`).not.toBeNull();
+    expect(response?.ok(), `${this.schemeName} create should succeed (HTTP ${response?.status()}).`).toBe(true);
+    createdWeightsFor(this.schemeName).add(String(weight));
     await this.confirmSuccessIfShown();
+    await expect(dialog, 'Create dialog should close after saving.').toBeHidden({ timeout: 15000 });
 
-    await expect(
-      this.findRowByWeight(weight).first(),
-      `A ${this.schemeName} slab with weight ${weight} should appear in the table after creating it.`
-    ).toBeVisible({ timeout: 10000 });
+    const row = this.findRowByWeight(weight);
+    await expect(row, `A ${this.schemeName} slab with weight ${weight} should appear in the table after creating it.`).toHaveCount(1, { timeout: 15000 });
+    await expect(row.locator('td').nth(0)).toHaveText('1');
+    await expect(row.locator('td').nth(1)).toHaveText('10');
   }
 
   /**
-   * @param {RegExp} actionLabel
-   * @param {import('@playwright/test').Locator} [row] defaults to the first row; pass a specific row (e.g. from findRowByWeight) to act on an identified record
+   * Create dialog validation: the minimum must be greater than zero, and Cancel discards the
+   * form without calling the create API or adding a row.
+   * @param {string | number} unsavedWeight a run-stamped weight that must never be saved
    */
-  async openRowAction(actionLabel, row = this.rows.first()) {
-    // isVisible() is an instant check, not a poll - right after a fresh
-    // navigation the table may not have finished rendering yet, so wait
-    // for the row rather than giving up immediately.
-    const rowReady = await row.waitFor({ state: 'visible', timeout: 10000 }).then(() => true).catch(() => false);
-    if (!rowReady) return false;
+  async verifyCreateValidationAndCancel(unsavedWeight) {
+    const createRequests = /** @type {string[]} */ ([]);
+    /** @param {import('@playwright/test').Request} request */
+    const onRequest = (request) => {
+      if (request.method() === 'POST' && /\/create$/i.test(request.url().split('?')[0])) createRequests.push(request.url());
+    };
+    this.page.on('request', onRequest);
+    try {
+      const dialog = await this.openCreateDialog();
+      await expect(dialog).toContainText(`${this.schemeName} Slab Scheme Information`);
+      await expect(dialog).toContainText(`Minimum ${this.unit}`);
+      await expect(dialog).toContainText(`Maximum ${this.unit}`);
+      await expect(dialog).toContainText('Weight');
+      const { min, max, weight } = this.slabInputs(dialog);
+      const submit = dialog.getByRole('button', { name: /^Create$/i });
 
-    let directActionSelector = 'button:has-text("Edit"), button:has-text("Update"), button:has(mat-icon:has-text("edit"))';
-    if (/delete|remove/i.test(actionLabel.source)) {
-      directActionSelector = 'button:has-text("Delete"), button:has-text("Remove"), button:has(mat-icon:has-text("delete"))';
-    } else if (/view|details/i.test(actionLabel.source)) {
-      directActionSelector = [
-        'button:has-text("View")',
-        'button:has-text("Details")',
-        'button:has(mat-icon:has-text("visibility"))',
-        'button:has(mat-icon:has-text("remove_red_eye"))',
-      ].join(', ');
+      await this.setNumber(min, '-5');
+      await this.setNumber(max, '10');
+      await this.setNumber(weight, String(unsavedWeight));
+      await expect(dialog, 'A negative minimum must be rejected.').toContainText(new RegExp(`Minimum ${this.unit} should be greater than zero`, 'i'));
+      await expect(submit, 'Create must be disabled while the minimum is negative.').toBeDisabled();
+
+      await this.setNumber(min, '1');
+      await expect(dialog).not.toContainText(/should be greater than zero/i);
+      await expect(submit, 'Create is enabled again once the minimum is valid.').toBeEnabled();
+
+      await dialog.getByRole('button', { name: /^Cancel$/i }).click();
+      await expect(dialog, 'Cancel should close the create dialog.').toBeHidden({ timeout: 10000 });
+      expect(createRequests, 'Cancel must not call the create API.').toHaveLength(0);
+      await expect(this.findRowByWeight(unsavedWeight), 'The cancelled slab must not be added.').toHaveCount(0);
+    } finally {
+      this.page.off('request', onRequest);
     }
-
-    const directAction = row.locator(directActionSelector).filter({ visible: true }).first();
-    const rowAction = row
-      .locator(
-        'button:has(mat-icon:has-text("more_vert")), ' +
-        'button:has(mat-icon:has-text("more_horiz")), ' +
-        'mat-icon:has-text("more_vert"), ' +
-        'mat-icon:has-text("more_horiz"), ' +
-        '.mat-menu-trigger, [aria-label*="More" i]'
-      )
-      .filter({ visible: true })
-      .first();
-
-    if (await rowAction.isVisible().catch(() => false)) {
-      await rowAction.scrollIntoViewIfNeeded().catch(() => {});
-      await rowAction.click({ force: true }).catch(() => {});
-      await this.page.waitForTimeout(1000);
-
-      const action = this.page
-        .locator(
-          '.cdk-overlay-pane [role="menuitem"], ' +
-          '.cdk-overlay-pane button.mat-menu-item, ' +
-          '.mat-menu-panel [role="menuitem"], ' +
-          '[role="menu"] [role="menuitem"], ' +
-          '.dropdown-menu .dropdown-item'
-        )
-        .filter({ visible: true })
-        .filter({ hasText: actionLabel })
-        .first();
-
-      if (await action.isVisible().catch(() => false)) {
-        await action.click({ force: true }).catch(() => {});
-        await this.page.waitForTimeout(1500);
-        return true;
-      }
-
-      if (await this.activeDialog().isVisible().catch(() => false)) return true;
-      await this.page.keyboard.press('Escape').catch(() => {});
-    }
-
-    if (await directAction.isVisible().catch(() => false)) {
-      await directAction.scrollIntoViewIfNeeded().catch(() => {});
-      // Real click required - force clicks don't trigger this app's
-      // custom click handlers on these row-action icons (confirmed live).
-      await directAction.click().catch(() => {});
-      await this.page.waitForTimeout(1500);
-      return true;
-    }
-
-    return false;
   }
 
   /**
-   * This UI has no dedicated "View" action (confirmed live - only Edit
-   * and Delete icons exist per row), so Edit doubles as the detail view:
-   * open it, confirm the dialog shows this record's real weight, then
-   * cancel without saving anything.
+   * Create dialog weight validation: the weight is required and must be greater than zero
+   * (Create stays disabled until it is), and the header close icon discards the form
+   * without calling the create API or adding a row.
+   * @param {string | number} unsavedWeight a run-stamped weight that must never be saved
+   */
+  async verifyWeightValidationAndCloseIcon(unsavedWeight) {
+    const createRequests = /** @type {string[]} */ ([]);
+    /** @param {import('@playwright/test').Request} request */
+    const onRequest = (request) => {
+      if (request.method() === 'POST' && /\/create$/i.test(request.url().split('?')[0])) createRequests.push(request.url());
+    };
+    this.page.on('request', onRequest);
+    try {
+      const dialog = await this.openCreateDialog();
+      const { min, max, weight } = this.slabInputs(dialog);
+      const submit = dialog.getByRole('button', { name: /^Create$/i });
+      await this.setNumber(min, '1');
+      await this.setNumber(max, '10');
+
+      await weight.fill('');
+      await weight.blur();
+      await expect(dialog, 'An empty weight must be rejected.').toContainText('Weight is required');
+      await expect(submit, 'Create must be disabled without a weight.').toBeDisabled();
+
+      await this.setNumber(weight, '-3');
+      await weight.blur();
+      await expect(dialog, 'A negative weight must be rejected.').toContainText('Weight should be greater than zero');
+      await expect(submit, 'Create must be disabled while the weight is negative.').toBeDisabled();
+
+      await this.setNumber(weight, String(unsavedWeight));
+      await expect(dialog).not.toContainText(/Weight is required|Weight should be greater than zero/);
+      await expect(submit, 'Create is enabled once the weight is valid.').toBeEnabled();
+
+      await dialog.locator('button, mat-icon, span').filter({ hasText: /^\s*close\s*$/ }).first().click();
+      await expect(dialog, 'The close icon should close the create dialog.').toBeHidden({ timeout: 10000 });
+      expect(createRequests, 'Closing the dialog must not call the create API.').toHaveLength(0);
+      await expect(this.findRowByWeight(unsavedWeight), 'The discarded slab must not be added.').toHaveCount(0);
+    } finally {
+      this.page.off('request', onRequest);
+    }
+  }
+
+  /**
+   * @param {RegExp} actionLabel /Edit/ or /Delete/
+   * @param {import('@playwright/test').Locator} row
+   */
+  async openRowAction(actionLabel, row) {
+    const ready = await row.waitFor({ state: 'visible', timeout: 15000 }).then(() => true).catch(() => false);
+    if (!ready) return false;
+    const tooltip = /delete|remove/i.test(actionLabel.source) ? 'Delete' : 'Edit';
+    const button = row.locator(`button[mattooltip="${tooltip}"]`).first();
+    if (!(await button.isVisible().catch(() => false))) return false;
+    await button.scrollIntoViewIfNeeded().catch(() => {});
+    // Real click required - force clicks don't trigger these row-action buttons.
+    await button.click();
+    return true;
+  }
+
+  /**
+   * This UI has no dedicated "View" action (only Edit and Delete per row), so Edit doubles
+   * as the detail view: open it, confirm it shows this record's real values, then cancel.
    * @param {string | number} weight
    */
   async verifyViewFlow(weight) {
-    const row = this.findRowByWeight(weight).first();
-    const opened = await this.openRowAction(/Edit|Update/i, row);
+    const row = this.findRowByWeight(weight);
+    await expect(row, `${this.schemeName} slab with weight ${weight} should be listed.`).toHaveCount(1, { timeout: 15000 });
+    const opened = await this.openRowAction(/Edit/i, row);
     expect(opened, `${this.schemeName} slab with weight ${weight} should expose an Edit/view action.`).toBe(true);
 
     const dialog = this.activeDialog();
     await expect(dialog, `${this.schemeName} detail dialog should open.`).toBeVisible({ timeout: 10000 });
-
-    // The weight lives in an <input> field's value, not in the dialog's
-    // rendered text content, so it has to be checked via toHaveValue.
-    const weightInput = dialog.locator(
-      'input[formcontrolname*="weight" i], input[placeholder*="Weight" i], mat-form-field:has-text("Weight") input'
-    ).first();
+    const { min, max, weight: weightInput } = this.slabInputs(dialog);
     await expect(weightInput, `${this.schemeName} detail dialog should show weight ${weight}.`).toHaveValue(String(weight), { timeout: 10000 });
+    await expect(min).toHaveValue('1');
+    await expect(max).toHaveValue('10');
     await this.closeDialog();
 
-    await this.verifyPageLoaded();
+    await expect(this.findRowByWeight(weight), 'Viewing must not change the slab.').toHaveCount(1);
   }
 
   /**
@@ -512,97 +356,143 @@ export class DriverKpiSlabSchemePage {
    * @param {string | number} newWeight the weight to change it to
    */
   async verifyEditFlow(currentWeight, newWeight) {
-    const row = this.findRowByWeight(currentWeight).first();
-    const opened = await this.openRowAction(/Edit|Update/i, row);
+    const row = this.findRowByWeight(currentWeight);
+    await expect(row, `${this.schemeName} slab with weight ${currentWeight} should be listed.`).toHaveCount(1, { timeout: 15000 });
+    const opened = await this.openRowAction(/Edit/i, row);
     expect(opened, `${this.schemeName} slab with weight ${currentWeight} should expose an Edit action.`).toBe(true);
 
     const dialog = this.activeDialog();
     await expect(dialog, `${this.schemeName} edit dialog should open.`).toBeVisible({ timeout: 10000 });
+    const { weight } = this.slabInputs(dialog);
+    await expect(weight).toHaveValue(String(currentWeight), { timeout: 10000 });
+    await this.setNumber(weight, String(newWeight));
 
-    await this.fillFirstVisible(dialog, [
-      'input[formcontrolname*="weight" i]',
-      'input[placeholder*="Weight" i]',
-      'mat-form-field:has-text("Weight") input',
-      'input[type="number"]',
-    ], String(newWeight));
-
-    // The submit button here is literally labeled "Edit" (not "Update"),
-    // same as Create is labeled "Create" rather than a generic "Save".
-    const updateButton = await this.enabledButton(dialog, /^(Edit|Update|Save|Submit)$/i);
-    await expect(updateButton, `${this.schemeName} edit submit button should be visible.`).toBeVisible({ timeout: 10000 });
-    await expect(updateButton, `${this.schemeName} edit submit button should be enabled.`).toBeEnabled({ timeout: 10000 });
-    await updateButton.click();
-    await this.page.waitForTimeout(2000);
+    // The submit button is literally labelled "Edit".
+    const submit = dialog.getByRole('button', { name: /^(Edit|Update|Save)$/i }).first();
+    await expect(submit, `${this.schemeName} edit submit button should be enabled.`).toBeEnabled({ timeout: 10000 });
+    const saveResponse = this.waitForSlabApi(/update|edit/);
+    await submit.click();
+    const response = await saveResponse;
+    expect(response, `${this.schemeName} Edit should call its update API.`).not.toBeNull();
+    expect(response?.ok(), `${this.schemeName} update should succeed (HTTP ${response?.status()}).`).toBe(true);
+    const created = createdWeightsFor(this.schemeName);
+    created.delete(String(currentWeight));
+    created.add(String(newWeight));
     await this.confirmSuccessIfShown();
+    await expect(dialog, 'Edit dialog should close after saving.').toBeHidden({ timeout: 15000 });
 
     await expect(
-      this.findRowByWeight(newWeight).first(),
+      this.findRowByWeight(newWeight),
       `The edited ${this.schemeName} slab should show the updated weight ${newWeight}.`
-    ).toBeVisible({ timeout: 10000 });
+    ).toHaveCount(1, { timeout: 15000 });
+    await expect(this.findRowByWeight(currentWeight), 'The old weight should no longer be listed.').toHaveCount(0);
   }
 
   /** @param {string | number} weight identifies the record to delete */
   async verifyDeleteConfirmation(weight) {
-    const row = this.findRowByWeight(weight).first();
-    const opened = await this.openRowAction(/Delete|Remove/i, row);
+    const row = this.findRowByWeight(weight);
+    await expect(row, `${this.schemeName} slab with weight ${weight} should be listed before deleting it.`).toHaveCount(1, { timeout: 15000 });
+    const opened = await this.openRowAction(/Delete/i, row);
     expect(opened, `${this.schemeName} slab with weight ${weight} should expose a Delete action.`).toBe(true);
 
-    const confirmation = this.activeDialog();
+    const confirmation = this.page.locator('.swal2-popup, .modal-dialog, mat-dialog-container').filter({ visible: true }).last();
     await expect(confirmation, `${this.schemeName} delete confirmation should open.`).toBeVisible({ timeout: 10000 });
-
-    const confirmButton = await this.enabledButton(confirmation, /^(Delete|Remove|Yes|Confirm)$/i);
+    const confirmButton = confirmation.getByRole('button', { name: /^(Delete|Remove|Yes.*|Confirm)$/i }).first();
     await expect(confirmButton, `${this.schemeName} delete confirm button should be visible.`).toBeVisible({ timeout: 10000 });
+    const deleteResponse = this.waitForSlabApi(/delete|remove/);
     await confirmButton.click();
-    await this.page.waitForTimeout(1500);
+    const response = await deleteResponse;
+    expect(response, `${this.schemeName} Delete should call its delete API.`).not.toBeNull();
+    expect(response?.ok(), `${this.schemeName} delete should succeed (HTTP ${response?.status()}).`).toBe(true);
     await this.confirmSuccessIfShown();
 
     await expect(
       this.findRowByWeight(weight),
       `The ${this.schemeName} slab with weight ${weight} should no longer appear after deleting it.`
-    ).toHaveCount(0, { timeout: 10000 });
+    ).toHaveCount(0, { timeout: 15000 });
+    createdWeightsFor(this.schemeName).delete(String(weight));
+  }
+
+  /**
+   * Every slab scheme is listed under the "Driver KPI Slabs" sidebar menu and each link opens
+   * that scheme's page.
+   */
+  async verifySidebarSchemeNavigation() {
+    for (const schemeName of ALL_SCHEMES) {
+      const page = new DriverKpiSlabSchemePage(this.page, schemeName);
+      await page.openSchemeFromSidebar();
+      await expect(this.page, `${schemeName} link should open its route.`).toHaveURL(new RegExp(escapeRegExp(SCHEME_ROUTES[schemeName])), { timeout: 30000 });
+      await page.verifyPageLoaded();
+      const headers = (await page.table.locator('th').allInnerTexts()).map((text) => text.replace(/\s+/g, ' ').trim());
+      expect(headers[0], `${schemeName} first column`).toBe(`Minimum ${page.unit}`);
+    }
+  }
+
+  /**
+   * Resolves with the next slab API response whose path ends in this action (e.g. the
+   * delete call is GET /api/numberOfFines/delete?id=...), or null after 30s.
+   * @param {RegExp} action e.g. /update|edit/ or /delete/
+   */
+  waitForSlabApi(action) {
+    return this.page
+      .waitForResponse((response) => {
+        const urlPath = response.url().split('?')[0];
+        return ['xhr', 'fetch'].includes(response.request().resourceType()) && response.request().method() !== 'OPTIONS'
+          && new RegExp(`/api/[^/]+/(${action.source})$`, 'i').test(urlPath);
+      }, { timeout: 30000 })
+      .catch(() => null);
   }
 
   async confirmSuccessIfShown() {
-    const okButton = this.page
-      .locator('.swal2-confirm, button:has-text("OK"), button:has-text("Ok")')
-      .filter({ visible: true })
-      .first();
-    if (await okButton.isVisible().catch(() => false)) {
-      await okButton.click({ force: true }).catch(() => {});
-      await this.page.waitForTimeout(1000);
+    const okButton = this.page.locator('.swal2-confirm').filter({ visible: true }).first();
+    if (await okButton.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false)) {
+      await okButton.click();
+      await okButton.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
     }
   }
 
   async closeDialog() {
     const dialog = this.activeDialog();
-    const cancelButton = this.page
-      .locator(
-        '.swal2-cancel, button:has-text("Cancel"), button:has-text("Close"), button:has-text("No"), ' +
-        '[aria-label="Close"], mat-icon:has-text("close")'
-      )
-      .filter({ visible: true })
-      .first();
+    await dialog.getByRole('button', { name: /^Cancel$/i }).click();
+    await expect(dialog, 'Dialog should close without saving.').toBeHidden({ timeout: 10000 });
+  }
+}
 
-    if (await cancelButton.isVisible().catch(() => false)) {
-      await cancelButton.click({ force: true }).catch(() => {});
-      await this.page.waitForTimeout(1000);
-    } else if (await dialog.isVisible().catch(() => false)) {
-      await this.page.keyboard.press('Escape').catch(() => {});
-      await this.page.waitForTimeout(1000);
+/**
+ * afterAll safety net: deletes any slab this worker created for the scheme and did not get
+ * to delete (only exact run-stamped weights recorded at create/edit time).
+ * @param {import('@playwright/test').Browser} browser
+ * @param {string} schemeName
+ */
+export async function cleanupCreatedSlabs(browser, schemeName, budgetMs = 180000) {
+  const weights = [...createdWeightsFor(schemeName)];
+  if (weights.length === 0) return;
+  const page = await browser.newPage();
+  const work = (async () => {
+    const scheme = new DriverKpiSlabSchemePage(page, schemeName);
+    await scheme.goto();
+    for (const weight of weights) {
+      if ((await scheme.findRowByWeight(weight).count()) === 0) {
+        createdWeightsFor(schemeName).delete(weight);
+        continue;
+      }
+      await scheme.verifyDeleteConfirmation(weight);
+      console.log(`INFO: Cleanup deleted ${schemeName} test slab with weight ${weight}.`);
     }
-  }
-
-  /**
-   * @param {string} value
-   */
-  normalize(value) {
-    return value.toLowerCase().replace(/[^a-z0-9]/g, '');
-  }
-
-  /**
-   * @param {string} value
-   */
-  escapeRegExp(value) {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  })();
+  /** @type {NodeJS.Timeout | undefined} */
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`cleanup exceeded ${budgetMs} ms`)), budgetMs);
+  });
+  try {
+    // Bounded so a hung page can never make the afterAll hook itself time out.
+    await Promise.race([work, deadline]);
+  } catch (error) {
+    console.log(`WARNING: Could not clean up ${schemeName} test slabs ${JSON.stringify([...createdWeightsFor(schemeName)])} (Min 1 / Max 10) - delete them manually: ${error instanceof Error ? error.message : error}`);
+  } finally {
+    clearTimeout(timer);
+    await page.close().catch(() => {});
+    await work.catch(() => {});
   }
 }

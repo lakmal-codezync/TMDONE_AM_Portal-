@@ -97,9 +97,12 @@ test.describe('08-Offers - Target Audience Builder (view-only)', () => {
     const queryName = (await rows.first().locator('td').first().innerText()).trim();
     const row = rows.filter({ has: page.locator('td:first-child', { hasText: new RegExp(`^\\s*${escapeRegExp(queryName)}\\s*$`) }) }).first();
 
-    await clickWhenReady(page, row.locator('button[mattooltip="Edit Query"]'));
     const dialog = page.locator('modal-container').filter({ hasText: `${queryName} - Edit` });
-    await expect(dialog, 'Edit dialog should be titled with the query name.').toBeVisible({ timeout: 30000 });
+    // A click that lands while the list is still settling can be dropped; click again until it opens.
+    await expect(async () => {
+      if (!(await dialog.isVisible())) await clickWhenReady(page, row.locator('button[mattooltip="Edit Query"]'));
+      await expect(dialog, 'Edit dialog should be titled with the query name.').toBeVisible({ timeout: 20000 });
+    }).toPass({ timeout: 90000 });
     const update = dialog.getByRole('button', { name: 'Update' });
     await expect(update, 'Saved query form should load.').toBeVisible({ timeout: 60000 });
     await expect(update, 'Update stays disabled while nothing was changed.').toBeDisabled();

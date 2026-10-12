@@ -26,7 +26,7 @@ test.describe.serial('03 - Edit & Delete Campaign', () => {
   });
 
   test.afterAll(async ({ browser }) => {
-    test.setTimeout(300000);
+    test.setTimeout(540000);
     await H.deleteCampaignIfPresent(browser, CAMPAIGN_NAME);
     await H.deleteCampaignIfPresent(browser, EDITED_NAME);
   });
@@ -90,11 +90,18 @@ test.describe.serial('03 - Edit & Delete Campaign', () => {
     expect(String(body.Budget)).toBe(EDITED_BUDGET);
     expect(body.Description).toBe(EDITED_DESCRIPTION);
     expect(responseText).toContain('SUCCESS');
-    await H.expectSuccessSwal(page, 'Campaign Edited Successfully');
+    // The dialog closes without any (error) popup - the app shows no success message for edits.
     await expect(dialog).toBeHidden({ timeout: 20000 });
+    await expect(page.locator('.swal2-popup').filter({ visible: true }), 'no error popup after saving').toHaveCount(0);
 
     // The list now shows the edited values and the old name is gone.
-    const row = await H.findCampaignRow(page, EDITED_NAME);
+    const edited = await H.searchCampaigns(page, EDITED_NAME);
+    const item = edited.Items.find((/** @type {{Name: string}} */ c) => c.Name === EDITED_NAME);
+    expect(item, 'getCampignList returns the campaign under its new name').toBeTruthy();
+    expect(String(item.Budget)).toBe(EDITED_BUDGET);
+    expect(item.Description).toBe(EDITED_DESCRIPTION);
+    const row = H.campaignRow(page, EDITED_NAME);
+    await expect(row).toHaveCount(1, { timeout: 30000 });
     await expect(row.locator('td').nth(5)).toHaveText(EDITED_BUDGET);
     const old = await H.searchCampaigns(page, CAMPAIGN_NAME);
     expect(old.Items.filter((/** @type {{Name: string}} */ c) => c.Name === CAMPAIGN_NAME)).toHaveLength(0);

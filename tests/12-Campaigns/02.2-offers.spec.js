@@ -1,1651 +1,382 @@
-﻿// @ts-check
-import { test, expect } from '@playwright/test';
-import { loginToApp, goToPage } from '../helpers/loginHelper.js';
+// @ts-check
+// ============================================================
+// TMDone Admin Console - Campaigns
+// 02.2 - Campaign View -> Offer Management (campaign offers)
+// URL: #/home/campaigns/offer/list?campaignId=...
+// ------------------------------------------------------------
+// NOTE: this is the campaign's own offer section, not the standalone (view-only)
+// Offers page of tests/08-Offers.
+// Works only inside a campaign this file creates itself (unique run-stamped
+// name, Colombo zone, test stores). Every offer targets the test store Food
+// House, has a unique run-stamped name and is deleted by its own test; afterAll
+// deletes leftovers and then the campaign.
+// ============================================================
 
-const OFFER_IMAGE_PATHS = [
-  'tests/fixtures/offer-image.png',
-  'tests/fixtures/offer-image-ar.png',
-];
-// "Cafe Asiana" is no longer reliably present in the shared demo store
-// list (see the Stores suite, which hit the same issue); Food House is
-// the confirmed-present store used as the canonical test target.
-const TARGET_STORE_NAME = 'Food House';
+import { test, expect } from '@playwright/test';
+import * as H from './helpers/campaignHelpers.js';
+import * as O from './helpers/offerHelpers.js';
+
+const RUN_STAMP = Date.now().toString().slice(-7);
+const CAMPAIGN_NAME = `Auto Campaign COF ${RUN_STAMP}`;
+const START_DATE = new Date();
+const END_DATE = H.addDays(new Date(), 5);
+const MAIN_OFFER = `QA Offer Pct ${RUN_STAMP}`;
+const EDITED_VALUE = '15';
+
+/** Names of offers this run may have created (for the afterAll safety net). */
+const createdOffers = new Set();
+const [FOOD_HOUSE, CAFE_ASIANA] = H.TEST_STORES;
+const state = { foodHouseId: '' };
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {O.OfferSpec} spec
+ */
+async function createOffer(page, spec) {
+  createdOffers.add(spec.name);
+  return O.createCampaignOffer(page, { start: START_DATE, end: END_DATE, ...spec });
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} name
+ */
+async function deleteOffer(page, name) {
+  await O.deleteCampaignOffer(page, name);
+  createdOffers.delete(name);
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} label
+ */
+async function openOfferAction(page, label) {
+  const panel = await H.openRowMenu(page, await O.findOfferRow(page, MAIN_OFFER));
+  await H.clickMenuItem(page, panel, label);
+}
 
 test.describe.serial('02.2 - Campaign View Offers', () => {
-  const pad = (/** @type {number} */ n) => String(n).padStart(2, '0');
-  const today = new Date();
-  const endDate = new Date(today);
-  endDate.setMonth(endDate.getMonth() + 1);
-  const START_DATE = `${pad(today.getMonth() + 1)}/${pad(today.getDate())}/${today.getFullYear()}`;
-  const END_DATE = `${pad(endDate.getMonth() + 1)}/${pad(endDate.getDate())}/${endDate.getFullYear()}`;
+  test.beforeAll(async ({ browser }) => {
+    test.setTimeout(300000);
+    await H.createCampaignInFreshPage(browser, CAMPAIGN_NAME);
+  });
 
-  /**
-   * @param {import("playwright-core").Page} page
-   */
-  async function openLatestCampaignView(page) {
-    const searchInput = page.locator('input[matinput], input.mat-input-element, input[placeholder*="Search" i]').first();
-    await searchInput.waitFor({ state: 'visible', timeout: 20000 });
-    await searchInput.fill('Auto Campaign');
-    await page.waitForTimeout(6000);
+  test.afterAll(async ({ browser }) => {
+    test.setTimeout(600000);
+    await H.deleteSectionRowsIfPresent(browser, CAMPAIGN_NAME, O.OFFER_SECTION, [...createdOffers]);
+    await H.deleteCampaignIfPresent(browser, CAMPAIGN_NAME);
+  });
 
-    let firstRow = page.locator('mat-row, tbody tr').first();
-    if (!(await firstRow.isVisible({ timeout: 15000 }).catch(() => false))) {
-      console.log('INFO: Auto Campaign not found. Clearing search and using first available campaign.');
-      await searchInput.clear();
-      await searchInput.dispatchEvent('input').catch(() => {});
-      await page.waitForTimeout(3000);
-      firstRow = page.locator('mat-row, tbody tr').first();
+  test.beforeEach(async ({ page }) => {
+    test.setTimeout(420000);
+    await H.gotoCampaignSection(page, CAMPAIGN_NAME, O.OFFER_SECTION.section, O.OFFER_SECTION.heading);
+    await expect(H.sectionHeading(page)).toHaveText(/Campaigns\s*-\s*Offer Management/);
+  });
+
+  test('COF-00: Offer Management page shows toolbar, filters, create menu and an empty table', async ({ page }) => {
+    await expect(H.sectionSearchInput(page)).toBeVisible();
+    await expect(page.locator('button[mattooltip="Search"]')).toBeVisible();
+    await expect(page.locator('button[mattooltip="Clear"]')).toBeVisible();
+    await expect(page.locator('span[mattooltip="Analytics"]')).toBeVisible();
+    await expect(page.locator('thead th')).toHaveText(['Index', 'Name', 'Arabic Name', 'Start Date', 'End Date', 'Offer Type', 'Order Type', 'Target Type', 'Is Active', 'Actions'].map((t) => H.exactText(t)));
+    await expect(page.locator('tbody tr')).toHaveCount(0);
+    await expect(page.getByText('Total 0 results found')).toBeVisible();
+    for (const [formControl, options] of /** @type {[string, string[]][]} */ ([
+      ['OrderType', ['Delivery', 'Pickup', 'Both']],
+      ['Type', ['Store', 'Category', 'Item', 'Chain']],
+      ['StoreId', [...H.TEST_STORES].sort()],
+    ])) {
+      await H.realClick(page, page.locator(`mat-select[formcontrolname="${formControl}"]`));
+      const panel = page.locator('.mat-select-panel').filter({ visible: true }).last();
+      await expect(panel.locator('mat-option').filter({ hasText: /\S/ }), `${formControl} filter options`).toHaveText(options.map((t) => H.exactText(t)));
+      await page.locator('.cdk-overlay-backdrop').last().click({ position: { x: 3, y: 3 } });
+      await expect(panel).toBeHidden();
     }
+    await H.realClick(page, page.getByRole('button', { name: 'Create', exact: true }));
+    const menu = page.locator('.mat-menu-panel').filter({ visible: true }).last();
+    await expect(menu.locator('button')).toHaveText([/Create Campaign Offer/, /Create Highlighted Offer/]);
+    await H.closeMenu(page);
+  });
 
-    if (!(await firstRow.isVisible({ timeout: 15000 }).catch(() => false))) {
-      test.skip(true, 'No campaign rows are available in this UAT environment.');
+  test('COF-01: Create Campaign Offer dialog validates step 1 and closes without saving', async ({ page }) => {
+    const addCalls = [];
+    page.on('request', (r) => { if (/api\/campaignOffer\/add/.test(r.url())) addCalls.push(r.url()); });
+    const dialog = await H.openSectionCreateDialog(page, 'Create', /Create Campaign Offer/, 'Create Campaign Offer');
+    await expect(dialog).toContainText(/\(1 of 4 Steps\)/);
+    const next = dialog.getByRole('button', { name: /^\s*Next\s*$/ });
+    await expect(next).toBeDisabled();
+    await expect(dialog.locator('mat-select[formcontrolname="OfferType"]')).toContainText('Basic');
+    await expect(dialog.locator('mat-select[formcontrolname="DiscountType"]')).toContainText('Percentage');
+    for (const [formControl, options] of /** @type {[string, string[]][]} */ ([
+      ['OfferType', ['Basic', 'Target Audience']],
+      ['OrderType', ['Delivery', 'Pickup', 'Both']],
+      ['TargetType', ['Store', 'Category', 'Item']],
+      ['DiscountType', ['Percentage', 'Amount']],
+    ])) {
+      await H.realClick(page, dialog.locator(`mat-select[formcontrolname="${formControl}"]`));
+      const panel = page.locator('.mat-select-panel').filter({ visible: true }).last();
+      await expect(panel.locator('mat-option'), `${formControl} options`).toHaveText(options.map((t) => H.exactText(t)));
+      await page.locator('.cdk-overlay-backdrop').last().click({ position: { x: 3, y: 3 } });
+      await expect(panel).toBeHidden();
     }
+    await H.chooseMatOption(page, dialog.locator('mat-select[formcontrolname="OrderType"]'), 'Delivery');
+    await expect(dialog.getByText('Target Type is Required')).toBeVisible();
+    await dialog.locator('input[formcontrolname="Name"]').fill(MAIN_OFFER);
+    await expect(next, 'Next stays disabled until all required fields are filled').toBeDisabled();
+    await H.closeDialogWithX(page, dialog);
+    expect(addCalls, 'Closing the dialog must not create an offer').toHaveLength(0);
+    await expect(page.locator('tbody tr')).toHaveCount(0);
+  });
 
-    const actionBtn = firstRow.locator('.mat-menu-trigger, i.mar-icon-more-h, i.mar-icon-more-v, button[mat-icon-button]').first();
-    if (await actionBtn.isVisible().catch(() => false)) {
-      await actionBtn.click({ force: true });
-    } else {
-      await firstRow.click({ force: true }).catch(() => {});
+  test('COF-02: Create a percentage Store offer for Food House', async ({ page }) => {
+    const { body } = await createOffer(page, { name: MAIN_OFFER, discountValue: '10', minOrderAmount: '2', discountMaxAmount: '3' });
+    state.foodHouseId = body.StoreIds[0];
+    expect(body.DiscountType).toBe('PERCENTAGE');
+    expect(body.DiscountValue).toBe(10);
+    expect(body.OfferStatuses).toEqual([expect.objectContaining({ IsActive: true })]);
+    const row = await O.findOfferRow(page, MAIN_OFFER);
+    await expect(row.locator('td').nth(1)).toHaveText(MAIN_OFFER);
+    await expect(row.locator('td').nth(2)).toHaveText('عرض تجريبي');
+    await expect(row.locator('td').nth(3)).toHaveText(H.formatDDMMYYYY(START_DATE));
+    await expect(row.locator('td').nth(4)).toHaveText(H.formatDDMMYYYY(END_DATE));
+    await expect(row.locator('td').nth(5)).toHaveText('Basic');
+    await expect(row.locator('td').nth(6)).toHaveText('Delivery');
+    await expect(row.locator('td').nth(7)).toHaveText('Store');
+    await expect(row.locator('td').nth(8)).toHaveText('True');
+  });
+
+  test('COF-03: Order Type / Target Type / Store filters, Clear and the card view work on the created offer', async ({ page }) => {
+    await O.findOfferRow(page, MAIN_OFFER);
+    await H.clearSectionFilters(page, O.OFFER_LIST_API);
+    const orderType = page.locator('mat-select[formcontrolname="OrderType"]');
+    const targetType = page.locator('mat-select[formcontrolname="Type"]');
+    let json = await H.applySectionFilter(page, orderType, 'Pickup', O.OFFER_LIST_API, '"OrderType":"PICKUP"');
+    expect(json.Items.some((/** @type {{Name: string}} */ i) => i.Name === MAIN_OFFER), 'Pickup filter excludes the delivery offer').toBe(false);
+    json = await H.applySectionFilter(page, orderType, 'Delivery', O.OFFER_LIST_API, '"OrderType":"DELIVERY"');
+    expect(json.Items.map((/** @type {{Name: string}} */ i) => i.Name)).toContain(MAIN_OFFER);
+    json = await H.applySectionFilter(page, targetType, 'Category', O.OFFER_LIST_API, '"Type":"CATEGORY"');
+    expect(json.Items.some((/** @type {{Name: string}} */ i) => i.Name === MAIN_OFFER), 'Category filter excludes the store offer').toBe(false);
+    await expect(H.sectionRow(page, MAIN_OFFER, 2)).toHaveCount(0);
+    json = await H.applySectionFilter(page, targetType, 'Store', O.OFFER_LIST_API, '"Type":"STORE"');
+    expect(json.Items.map((/** @type {{Name: string}} */ i) => i.Name)).toContain(MAIN_OFFER);
+    await expect(H.sectionRow(page, MAIN_OFFER, 2)).toHaveCount(1);
+    json = await H.clearSectionFilters(page, O.OFFER_LIST_API);
+    expect(json.Items.map((/** @type {{Name: string}} */ i) => i.Name)).toContain(MAIN_OFFER);
+
+    // Store filter: the Food House offer is listed for Food House only.
+    expect(state.foodHouseId, 'COF-02 must have created the offer').toBeTruthy();
+    const storeFilter = page.locator('mat-select[formcontrolname="StoreId"]');
+    json = await H.applySectionFilter(page, storeFilter, CAFE_ASIANA, O.OFFER_LIST_API, new RegExp(`"StoreId":"(?!${state.foodHouseId})[0-9a-f]{24}"`));
+    expect(json.Items.some((/** @type {{Name: string}} */ i) => i.Name === MAIN_OFFER), `${CAFE_ASIANA} filter excludes the Food House offer`).toBe(false);
+    await expect(H.sectionRow(page, MAIN_OFFER, 2)).toHaveCount(0);
+    json = await H.applySectionFilter(page, storeFilter, FOOD_HOUSE, O.OFFER_LIST_API, `"StoreId":"${state.foodHouseId}"`);
+    expect(json.Items.map((/** @type {{Name: string}} */ i) => i.Name)).toContain(MAIN_OFFER);
+    await expect(H.sectionRow(page, MAIN_OFFER, 2)).toHaveCount(1);
+    await expect(storeFilter).toContainText(FOOD_HOUSE);
+    await H.checkSectionGridView(page, MAIN_OFFER);
+  });
+
+  test('COF-04: Row menu lists actions and View shows the offer details', async ({ page }) => {
+    const panel = await H.openRowMenu(page, await O.findOfferRow(page, MAIN_OFFER));
+    expect(await H.menuLabels(panel)).toEqual(['Analytics', 'Edit', 'Set Stores', 'Manage Stores', 'View', 'Delete']);
+    await H.clickMenuItem(page, panel, 'View');
+    await page.waitForURL(/#\/home\/campaigns\/offer\/view/, { timeout: 30000 });
+    await H.waitForSpinner(page);
+    await expect(page.getByText(MAIN_OFFER, { exact: true })).toBeVisible({ timeout: 30000 });
+    await expect(page.getByText('ACTIVE', { exact: true })).toBeVisible();
+    await expect(page.getByText(`${H.formatDDMMYYYY(START_DATE)} - ${H.formatDDMMYYYY(END_DATE)}`, { exact: true })).toBeVisible();
+    for (const [label, value] of [['OFFER TYPE', 'BASIC'], ['ORDER TYPE', 'DELIVERY'], ['TARGET TYPE', 'STORE'], ['DISCOUNT TYPE', 'PERCENTAGE'], ['DISCOUNT VALUE', '10']]) {
+      await expect(page.getByText(label, { exact: true }), label).toBeVisible();
+      await expect(page.getByText(value, { exact: true }).first(), `${label} = ${value}`).toBeVisible();
     }
-    await page.waitForTimeout(1200);
+    await expect(page.getByText('OFFER ENGLISH IMAGE', { exact: true })).toBeVisible();
+    await expect(page.getByText('OFFER ARABIC IMAGE', { exact: true })).toBeVisible();
+  });
 
-    const viewBtn = page.locator('button.mat-menu-item:has-text("View"), [role="menuitem"]:has-text("View"), .dropdown-item:has-text("View")').first();
-    await viewBtn.waitFor({ state: 'visible', timeout: 15000 });
-    await viewBtn.click({ force: true });
-    await page.waitForTimeout(4000);
-  }
+  test('COF-05: Manage Stores lists Food House and Set Stores shows it selected (Cancel, nothing saved)', async ({ page }) => {
+    const infos = H.waitForApi(page, /api\/campaignOffer\/getCampaignOfferStoreInfos/);
+    await openOfferAction(page, 'Manage Stores');
+    await page.waitForURL(/#\/home\/campaigns\/offer\/manage-store/, { timeout: 30000 });
+    const json = await (await infos).json();
+    expect(json.Items.map((/** @type {{StoreName: string, IsActive: boolean}} */ i) => [i.StoreName, i.IsActive])).toEqual([['Food House', true]]);
+    await expect(page.locator('h4').filter({ hasText: 'Manage Stores' }).first()).toBeVisible();
+    await expect(page.locator('thead th')).toHaveText([H.exactText('Store Name'), H.exactText('Is Active')]);
+    const storeRow = H.sectionRow(page, 'Food House');
+    await expect(storeRow).toHaveCount(1);
+    await expect(storeRow.locator('td').nth(1)).toHaveText('True');
+    await expect(storeRow.locator('button[mattooltip="Edit"]')).toBeVisible();
 
-  /**
-   * @param {import("playwright-core").Page} page
-   */
-  async function isOfferManagementOpen(page) {
-    const offerManagementTitle = page
-      .locator('h1, h2, h3, h4, .page-title')
-      .filter({ hasText: /Campaigns\s*-\s*Offer Management|Offer Management/i })
-      .first();
+    await H.gotoCampaignSection(page, CAMPAIGN_NAME, O.OFFER_SECTION.section, O.OFFER_SECTION.heading);
+    const saves = [];
+    page.on('request', (r) => { if (/api\/campaignOffer\/(setStores|setOfferStores|updateStores)/i.test(r.url())) saves.push(r.url()); });
+    await openOfferAction(page, 'Set Stores');
+    await page.waitForURL(/#\/home\/campaigns\/offer\/set-store/, { timeout: 30000 });
+    await expect(page.locator('h4, h3').filter({ hasText: 'Set Stores - Offer Management' }).first()).toBeVisible({ timeout: 30000 });
+    const lists = page.locator('dual-list .listbox');
+    await expect(lists.nth(1).locator('li').filter({ hasText: H.exactText('Food House') })).toHaveCount(1, { timeout: 20000 });
+    await expect(lists.nth(0).locator('li').filter({ hasText: H.exactText('Cafe Asiana - Market Place') })).toHaveCount(1);
+    await H.realClick(page, page.getByRole('button', { name: /^\s*Cancel\s*$/ }));
+    await expect(H.sectionHeading(page)).toHaveText(/Offer Management/, { timeout: 30000 });
+    expect(saves, 'Cancel must not save stores').toHaveLength(0);
+  });
 
-    return await offerManagementTitle.isVisible({ timeout: 10000 }).catch(() => false);
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   */
-  async function getCreateCampaignOfferButton(page) {
-    if (!(await isOfferManagementOpen(page))) return null;
-
-    const exactCreateCampaignOffer = page.getByRole('button', { name: /^Create Campaign Offer$/ }).first();
-    if (await exactCreateCampaignOffer.isVisible().catch(() => false)) return exactCreateCampaignOffer;
-
-    const offerCreateButtons = [
-      page.getByRole('button', { name: /^Create Offer$/ }).first(),
-      page.getByRole('button', { name: /^Add Offer$/ }).first(),
-      page.getByRole('button', { name: /^Create$/ }).first(),
-      page.locator('button.create-button:has-text("Create")').first(),
-    ];
-
-    for (const button of offerCreateButtons) {
-      if (await button.isVisible().catch(() => false)) return button;
+  test('COF-06: Analytics shows the offer order summary', async ({ page }) => {
+    const lookup = H.waitForApi(page, /api\/campaign\/getCampaignTypeLookup/, { body: (b) => b.includes('"Type":"OFFER"') });
+    await openOfferAction(page, 'Analytics');
+    const items = await (await lookup).json();
+    expect(items.map((/** @type {{Name: string}} */ i) => i.Name)).toContain(MAIN_OFFER);
+    await expect(page.getByText('Offer - Order Summary', { exact: true })).toBeVisible({ timeout: 30000 });
+    for (const metric of ['Total Orders Count', 'Total Discount', "How much you've got (GMV)", 'Customers Count', 'Gross Total']) {
+      await expect(page.getByText(metric, { exact: true }).first(), metric).toBeVisible();
     }
-
-    return null;
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {import("playwright-core").Locator} context
-   * @param {string} label
-   */
-  async function selectDropdown(page, context, label, optionIndex = 0, optionText = null) {
-    const compactLabel = label.replace(/\s+/g, '');
-    const selector =
-      `mat-select[formcontrolname*="${label}" i], ` +
-      `mat-select[formcontrolname*="${compactLabel}" i], ` +
-      `mat-select[aria-label*="${label}" i], ` +
-      `mat-select[placeholder*="${label}" i], ` +
-      `mat-form-field:has-text("${label}") mat-select`;
-
-    const dropdown = context.locator(selector).first();
-    if (!(await dropdown.isVisible().catch(() => false))) return false;
-    await dropdown.scrollIntoViewIfNeeded().catch(() => {});
-    await dropdown.click({ force: true }).catch(() => {});
-    await page.waitForTimeout(400);
-
-    const overlayOptions = page.locator('mat-option, .mat-option, .cdk-overlay-pane mat-option');
-    // Options can populate asynchronously (e.g. Target Type depends on
-    // context loaded after the dialog opens) - poll briefly rather than
-    // giving up on the very first empty check.
-    let count = await overlayOptions.count().catch(() => 0);
-    for (let attempt = 0; attempt < 8 && count === 0; attempt += 1) {
-      await page.waitForTimeout(400);
-      count = await overlayOptions.count().catch(() => 0);
-    }
-    if (count === 0) {
-      const localOptions = dropdown.locator('mat-option, .mat-option');
-      if (await localOptions.nth(optionIndex).isVisible().catch(() => false)) {
-        await localOptions.nth(optionIndex).click({ force: true }).catch(() => {});
-        return true;
-      }
-      return false;
-    }
-
-    if (optionText) {
-      const optionByText = overlayOptions.filter({ hasText: new RegExp(optionText, 'i') }).first();
-      if (await optionByText.isVisible().catch(() => false)) {
-        await optionByText.click({ force: true }).catch(() => {});
-        await page.waitForTimeout(500);
-        return true;
-      }
-    }
-
-    const selectableOptions = [];
-    for (let i = 0; i < count; i++) {
-      const option = overlayOptions.nth(i);
-      if (!(await option.isVisible().catch(() => false))) continue;
-
-      const text = ((await option.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-      const ariaDisabled = await option.getAttribute('aria-disabled').catch(() => null);
-      const classList = (await option.getAttribute('class').catch(() => '')) || '';
-      const disabled = ariaDisabled === 'true' || /disabled/.test(classList);
-      const placeholder = !text || /^(select|please select|choose|loading|no data|no records|no results)/i.test(text);
-
-      if (!disabled && !placeholder) selectableOptions.push(option);
-    }
-
-    const selectable = selectableOptions[optionIndex] || selectableOptions[0];
-    if (selectable) {
-      await selectable.click({ force: true }).catch(() => {});
-      await page.waitForTimeout(500);
-      return true;
-    }
-
-    for (let i = 0; i < count; i++) {
-      if (await overlayOptions.nth(i).isVisible().catch(() => false)) {
-        await overlayOptions.nth(i).click({ force: true }).catch(() => {});
-        await page.waitForTimeout(500);
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  /**
-   * @param {import("playwright-core").Locator} context
-   * @param {string[]} selectors
-   * @param {string} value
-   */
-  async function fillFirstVisible(context, selectors, value) {
-    for (const selector of selectors) {
-      const input = context.locator(selector).first();
-      if (await input.isVisible().catch(() => false)) {
-        if (!(await input.isEditable().catch(() => false))) continue;
-        await input.scrollIntoViewIfNeeded().catch(() => {});
-        await input.click({ clickCount: 3, force: true }).catch(() => {});
-        await input.fill(String(value)).catch(() => {});
-        await input.dispatchEvent('input').catch(() => {});
-        await input.dispatchEvent('change').catch(() => {});
-        await input.blur().catch(() => {});
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {import("playwright-core").Locator} context
-   * @param {number} datePickerIndex
-   */
-  async function selectCalendarDate(page, context, datePickerIndex, nextMonth = false) {
-    const dateInput = context
-      .locator(
-        'input[formcontrolname*="Date" i], ' +
-        'mat-form-field:has-text("Date") input, ' +
-        'input[placeholder*="Date" i]'
-      )
-      .nth(datePickerIndex);
-
-    if (!(await dateInput.isVisible().catch(() => false))) return false;
-
-    const toggle = context.locator('mat-datepicker-toggle button, button[aria-label="Open calendar"]').nth(datePickerIndex);
-    if (!(await toggle.isVisible().catch(() => false))) return false;
-
-    await toggle.click({ force: true });
-    await page.waitForTimeout(500);
-
-    if (nextMonth) {
-      const nextMonthBtn = page.locator('button[aria-label="Next month"]').first();
-      if (await nextMonthBtn.isVisible().catch(() => false)) {
-        await nextMonthBtn.click({ force: true });
-        await page.waitForTimeout(400);
-      }
-    }
-
-    const targetDay = String(today.getDate());
-    const targetCell = page
-      .locator('.mat-calendar-body-cell:not([aria-disabled="true"]) .mat-calendar-body-cell-content')
-      .filter({ hasText: new RegExp(`^${targetDay}$`) })
-      .first();
-
-    if (await targetCell.isVisible().catch(() => false)) {
-      await targetCell.click({ force: true });
-    } else {
-      await page.locator('.mat-calendar-body-cell:not([aria-disabled="true"])').first().click({ force: true }).catch(() => {});
-    }
-
-    await page.waitForTimeout(500);
-    return true;
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   */
-  async function handleOptionalStoreSelection(page) {
-    const context = page.locator('modal-container, mat-dialog-container, .modal-dialog, [role="dialog"]').filter({ visible: true }).last();
-    const picker = context.locator('.record-picker, app-record-picker, .listbox').first();
-    const selectAll = context
-      .locator('button.pull-left:has-text("All"), button:has-text("Select All"), mat-checkbox:has-text("Select All"), th mat-checkbox')
-      .first();
-
-    if (!(await picker.isVisible().catch(() => false)) && !(await selectAll.isVisible().catch(() => false))) return false;
-
-    console.log('INFO: Optional store selection detected.');
-    const storeSearch = context.locator('input[placeholder*="Search" i], input[aria-label*="search" i], input[matinput], input.mat-input-element').first();
-    if (await storeSearch.isVisible().catch(() => false) && await storeSearch.isEditable().catch(() => false)) {
-      await storeSearch.click({ force: true }).catch(() => {});
-      await storeSearch.fill(TARGET_STORE_NAME).catch(() => {});
-      await storeSearch.dispatchEvent('input').catch(() => {});
-      await page.waitForTimeout(1000);
-    }
-
-    const targetStore = context.getByText(new RegExp(`^${TARGET_STORE_NAME}$`, 'i')).first();
-    if (await targetStore.isVisible().catch(() => false)) {
-      console.log(`INFO: Selecting store: ${TARGET_STORE_NAME}`);
-      await targetStore.scrollIntoViewIfNeeded().catch(() => {});
-      await targetStore.click({ force: true }).catch(() => {});
-      await page.waitForTimeout(500);
-    } else {
-      console.log(`WARNING: Target store "${TARGET_STORE_NAME}" was not found in store selection.`);
-      return false;
-    }
-
-    const addBtn = context
-      .locator('button[name="addBtn"], button:has-text("Add"), button:has(mat-icon:has-text("chevron_right")), .point-right, :text("Add")')
-      .filter({ visible: true })
-      .first();
-    if (await addBtn.isVisible().catch(() => false)) {
-      await addBtn.evaluate((node) => {
-        const target = node.closest('button, [role="button"], .btn, div') || node;
-        target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-      }).catch(async () => {
-        await addBtn.click({ force: true });
-      });
-      await page.waitForTimeout(700);
-    }
-
-    const confirmBtn = await getEnabledDialogButton(context, /^(Create and set Stores|Create|Save|Submit|Next)$/);
-    if (await confirmBtn.isVisible().catch(() => false) && await confirmBtn.isEnabled().catch(() => false)) {
-      await confirmBtn.click({ force: true }).catch(() => {});
-      await page.waitForTimeout(1500);
-    }
-
-    return true;
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   */
-  async function getFirstSelectableTargetOption(page) {
-    const options = page
-      .locator('mat-option, .mat-option, [role="option"], .ng-option, .dropdown-item')
-      .filter({ visible: true })
-      .filter({ hasNotText: /close|search|add|remove|select all|no data|no records|no results|loading/i });
-    const count = await options.count().catch(() => 0);
-
-    for (let index = 0; index < count; index++) {
-      const option = options.nth(index);
-      const optionText = ((await option.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-      if (!optionText || /close|search|add|remove|select all|no data|no records|no results|loading/i.test(optionText)) continue;
-      return option;
-    }
-
-    return null;
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {import("playwright-core").Locator} select
-   */
-  async function deactivateTargetEntityRow(page, select) {
-    const deactivated = await select.evaluate((el) => {
-      let row = el.parentElement;
-      for (let depth = 0; row && depth < 8; depth++) {
-        const text = row.textContent || '';
-        if (/Is Active/i.test(text) && /Choose\s+(Category|Item)/i.test(text)) {
-          const toggle = row.querySelector('mat-slide-toggle.mat-checked, mat-slide-toggle[aria-checked="true"], mat-slide-toggle');
-          const target = toggle?.querySelector('button, input, label, .mat-slide-toggle-thumb-container') || toggle;
-          if (target) {
-            target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-            return true;
-          }
-        }
-        row = row.parentElement;
-      }
-      return false;
-    }).catch(() => false);
-
-    if (deactivated) {
-      console.log('INFO: Deactivated target entity row with no selectable categories/items.');
-      await page.waitForTimeout(500);
-    }
-
-    return deactivated;
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {import("playwright-core").Locator} dialog
-   */
-  async function deactivateInvalidTargetEntityRows(page, dialog) {
-    const deactivatedCount = await dialog.evaluate((root) => {
-      let count = 0;
-      const rows = Array.from(root.querySelectorAll('div, li, tr')).filter((el) => {
-        const text = el.textContent || '';
-        return /Please Select (Categories|Items)/i.test(text) && /Is Active/i.test(text);
-      });
-
-      for (const row of rows) {
-        const toggle = row.querySelector('mat-slide-toggle.mat-checked, mat-slide-toggle[aria-checked="true"], mat-slide-toggle');
-        const target = toggle?.querySelector('button, input, label, .mat-slide-toggle-thumb-container') || toggle;
-        if (target) {
-          target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-          count++;
-        }
-      }
-
-      return count;
-    }).catch(() => 0);
-
-    if (deactivatedCount > 0) {
-      console.log(`INFO: Deactivated ${deactivatedCount} invalid target entity row(s).`);
-      await page.waitForTimeout(700);
-    }
-
-    const box = await dialog.boundingBox().catch(() => null);
-    if (box) {
-      await page.mouse.click(box.x + 40, box.y + 40).catch(() => {});
-      await page.waitForTimeout(500);
-    }
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {import("playwright-core").Locator} dialog
-   */
-  async function confirmTargetEntitySelection(page, dialog) {
-    const activeDialog = page.locator('modal-container, mat-dialog-container, .modal-dialog, [role="dialog"]').filter({ visible: true }).last();
-    const context = await activeDialog.isVisible().catch(() => false) ? activeDialog : dialog;
-
-    const addBtn = context
-      .locator('button[name="addBtn"], button:has-text("Add"), button:has(mat-icon:has-text("chevron_right")), .point-right')
-      .filter({ visible: true })
-      .first();
-    if (await addBtn.isVisible().catch(() => false) && await addBtn.isEnabled().catch(() => false)) {
-      await addBtn.click({ force: true }).catch(() => {});
-      await page.waitForTimeout(700);
-    }
-
-    const confirmBtn = await getEnabledDialogButton(context, /^(Create and set Stores|Create|Save|Submit|Next|Add)$/);
-    if (await confirmBtn.isVisible().catch(() => false) && await confirmBtn.isEnabled().catch(() => false)) {
-      const buttonText = ((await confirmBtn.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-      console.log(`INFO: Confirming target entity selection via: ${buttonText}`);
-      await confirmBtn.click({ force: true }).catch(() => {});
-      await page.waitForTimeout(2000);
-    }
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {import("playwright-core").Locator} dialog
-   */
-  async function handleTargetEntitySelections(page, dialog) {
-    let roleComboboxes = dialog.locator('mat-select, [role="combobox"]').filter({ hasText: /Choose\s+(Category|Item)/i });
-    const roleComboboxCount = await roleComboboxes.count().catch(() => 0);
-    if (roleComboboxCount > 0) {
-      console.log(`INFO: Target entity role controls found: ${roleComboboxCount}`);
-      let selectedAnyRole = false;
-
-      for (let index = 0; index < roleComboboxCount; index++) {
-        const select = roleComboboxes.nth(index);
-        if (!(await select.isVisible().catch(() => false))) continue;
-
-        const currentText = ((await select.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-        if (currentText && !/choose\s+(category|item)/i.test(currentText)) continue;
-
-        await select.scrollIntoViewIfNeeded().catch(() => {});
-        await select.click({ force: true }).catch(() => {});
-        await page.waitForTimeout(1000);
-
-        const option = await getFirstSelectableTargetOption(page);
-        if (option && await option.isVisible().catch(() => false)) {
-          const optionText = ((await option.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-          await option.click({ force: true }).catch(() => {});
-          console.log(`INFO: Selected target entity: ${optionText}`);
-          selectedAnyRole = true;
-          await page.waitForTimeout(500);
-        } else {
-          if (await deactivateTargetEntityRow(page, select)) continue;
-          if (selectedAnyRole) break;
-          await page.keyboard.press('Escape').catch(() => {});
-        }
-      }
-
-      if (selectedAnyRole) {
-        await deactivateInvalidTargetEntityRows(page, dialog);
-        return true;
-      }
-    }
-
-    const domSelectCount = await page.evaluate(() => {
-      const matches = Array.from(document.querySelectorAll('mat-select, [role="combobox"], .mat-select-trigger'))
-        .filter((el) => {
-          const ownText = el.textContent || '';
-          const parentText = el.closest('mat-form-field, .mat-form-field, div')?.textContent || '';
-          return /Choose\s+(Category|Item)/i.test(`${ownText} ${parentText}`);
-        });
-      return matches.length;
-    }).catch(() => 0);
-
-    if (domSelectCount > 0) {
-      console.log(`INFO: Target entity DOM controls found: ${domSelectCount}`);
-      let selectedAnyDom = false;
-      for (let index = 0; index < domSelectCount; index++) {
-        await page.evaluate((targetIndex) => {
-          const matches = Array.from(document.querySelectorAll('mat-select, [role="combobox"], .mat-select-trigger'))
-            .filter((el) => {
-              const ownText = el.textContent || '';
-              const parentText = el.closest('mat-form-field, .mat-form-field, div')?.textContent || '';
-              return /Choose\s+(Category|Item)/i.test(`${ownText} ${parentText}`);
-            });
-          const el = matches[targetIndex];
-          if (!el) return;
-          const target = el.closest('mat-select, [role="combobox"], .mat-select-trigger') || el;
-          target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-          target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-          target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-        }, index).catch(() => {});
-        await page.waitForTimeout(700);
-
-        const option = await getFirstSelectableTargetOption(page);
-        if (option && await option.isVisible().catch(() => false)) {
-          const optionText = ((await option.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-          await option.click({ force: true }).catch(() => {});
-          console.log(`INFO: Selected target entity: ${optionText}`);
-          selectedAnyDom = true;
-          await page.waitForTimeout(500);
-        } else {
-          const deactivated = await page.evaluate((targetIndex) => {
-            const matches = Array.from(document.querySelectorAll('mat-select, [role="combobox"], .mat-select-trigger'))
-              .filter((el) => {
-                const ownText = el.textContent || '';
-                const parentText = el.closest('mat-form-field, .mat-form-field, div')?.textContent || '';
-                return /Choose\s+(Category|Item)/i.test(`${ownText} ${parentText}`);
-              });
-            const el = matches[targetIndex];
-            if (!el) return false;
-
-            let row = el.parentElement;
-            for (let depth = 0; row && depth < 8; depth++) {
-              const text = row.textContent || '';
-              if (/Is Active/i.test(text) && /Choose\s+(Category|Item)/i.test(text)) {
-                const toggle = row.querySelector('mat-slide-toggle.mat-checked, mat-slide-toggle[aria-checked="true"], mat-slide-toggle');
-                const target = toggle?.querySelector('button, input, label, .mat-slide-toggle-thumb-container') || toggle;
-                if (target) {
-                  target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                  return true;
-                }
-              }
-              row = row.parentElement;
-            }
-            return false;
-          }, index).catch(() => false);
-          if (deactivated) {
-            console.log('INFO: Deactivated target entity row with no selectable categories/items.');
-            await page.waitForTimeout(500);
-            continue;
-          }
-          if (selectedAnyDom) break;
-          await page.keyboard.press('Escape').catch(() => {});
-        }
-      }
-      if (selectedAnyDom) {
-        await deactivateInvalidTargetEntityRows(page, dialog);
-        return true;
-      }
-    }
-
-    const targetLabels = page.getByText(/Choose\s+(Category|Item)/i);
-    const targetSelects = page.locator('[role="combobox"], mat-select').filter({ hasText: /Choose\s+(Category|Item)/i });
-    const targetFields = page.locator('mat-form-field, .mat-form-field, div').filter({ hasText: /Choose\s+(Category|Item)/i });
-    const count = Math.max(
-      await targetLabels.count().catch(() => 0),
-      await targetSelects.count().catch(() => 0),
-      await targetFields.count().catch(() => 0)
-    );
-    if (count > 0) console.log(`INFO: Target entity controls found: ${count}`);
-    if (count === 0) return false;
-
-    let selectedAny = false;
-    for (let index = 0; index < count; index++) {
-      let select = targetSelects.nth(index);
-      if (!(await select.isVisible().catch(() => false))) {
-        select = targetFields.nth(index).locator('[role="combobox"], mat-select').first();
-      }
-      const label = targetLabels.nth(index);
-      if (!(await select.isVisible().catch(() => false)) && !(await label.isVisible().catch(() => false))) continue;
-
-      const currentText = ((await select.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-      if (currentText && !/choose\s+(category|item)/i.test(currentText)) continue;
-
-      if (await select.isVisible().catch(() => false)) {
-        await select.scrollIntoViewIfNeeded().catch(() => {});
-        await select.click({ force: true }).catch(() => {});
-      } else {
-        await label.scrollIntoViewIfNeeded().catch(() => {});
-        await label.click({ force: true }).catch(() => {});
-      }
-      await page.waitForTimeout(700);
-
-      const option = await getFirstSelectableTargetOption(page);
-      if (option && await option.isVisible().catch(() => false)) {
-        const optionText = ((await option.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-        await option.click({ force: true }).catch(() => {});
-        console.log(`INFO: Selected target entity: ${optionText}`);
-        selectedAny = true;
-        await page.waitForTimeout(500);
-      } else {
-        if (await deactivateTargetEntityRow(page, select)) continue;
-        if (selectedAny) break;
-        await page.keyboard.press('Escape').catch(() => {});
-      }
-    }
-
-    if (selectedAny) {
-      await deactivateInvalidTargetEntityRows(page, dialog);
-    }
-
-    return selectedAny;
-  }
-
-  /**
-   * @param {import("playwright-core").Locator} dialog
-   * @param {RegExp} labelPattern
-   */
-  async function getEnabledDialogButton(dialog, labelPattern) {
-    const buttons = dialog.locator('button.center-button, button.mat-primary, button');
-    const count = await buttons.count().catch(() => 0);
-
-    for (let index = count - 1; index >= 0; index--) {
-      const button = buttons.nth(index);
-      const text = ((await button.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-      if (
-        labelPattern.test(text) &&
-        await button.isVisible().catch(() => false) &&
-        await button.isEnabled().catch(() => false)
-      ) {
-        return button;
-      }
-    }
-
-    return buttons.first();
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {string} title
-   */
-  async function completeRemainingOfferSteps(page, title) {
-    for (let step = 0; step < 12; step++) {
-      const dialog = page.locator('mat-dialog-container, modal-container, .modal-dialog, [role="dialog"]').filter({ visible: true }).last();
-      if (!(await dialog.isVisible().catch(() => false))) {
-        await page.locator('mat-dialog-container, modal-container, .modal-dialog, [role="dialog"]').filter({ visible: true }).last()
-          .waitFor({ state: 'visible', timeout: 15000 })
-          .catch(() => {});
-        if (await page.locator('mat-dialog-container, modal-container, .modal-dialog, [role="dialog"]').filter({ visible: true }).last().isVisible().catch(() => false)) {
-          continue;
-        }
-        if (await isOfferManagementOpen(page)) {
-          return await verifyOfferSearch(page, title);
-        }
-        return await page.locator('mat-row, tbody tr, tr').filter({ hasText: title }).first().isVisible().catch(() => false);
-      }
-
-      if (await page.locator('mat-row, tbody tr, tr').filter({ hasText: title }).first().isVisible().catch(() => false)) {
-        await page.keyboard.press('Escape').catch(() => {});
-        return true;
-      }
-
-      if (await handleOptionalStoreSelection(page)) {
-        await page.waitForTimeout(2500);
-        continue;
-      }
-
-      if (await handleTargetEntitySelections(page, dialog)) {
-        await page.waitForTimeout(1000);
-      }
-
-      const fileInputs = dialog.locator('input[type="file"]');
-      const fileInputCount = await fileInputs.count().catch(() => 0);
-      if (fileInputCount > 0) {
-        console.log(`INFO: Found ${fileInputCount} offer image file input(s).`);
-        for (let index = 0; index < 2; index++) {
-          const remainingInputs = dialog.locator('input[type="file"]');
-          const remainingCount = await remainingInputs.count().catch(() => 0);
-          console.log(`INFO: Uploading offer image ${index + 1}; remaining inputs: ${remainingCount}`);
-          if (remainingCount <= index) break;
-
-          await remainingInputs.nth(index).setInputFiles(OFFER_IMAGE_PATHS[index]);
-          const photoEditor = page
-            .locator('modal-container, mat-dialog-container, .modal-dialog, [role="dialog"]')
-            .filter({ hasText: /Photo Editor/i })
-            .last();
-          await photoEditor.waitFor({ state: 'visible', timeout: 10000 });
-          if (await photoEditor.isVisible().catch(() => false)) {
-            const applyBtn = photoEditor.getByRole('button', { name: /^Apply$/ }).first();
-            await applyBtn.click({ force: true });
-            await photoEditor.waitFor({ state: 'hidden', timeout: 15000 }).catch(() => {});
-            console.log(`INFO: Applied offer image ${index + 1}.`);
-          }
-          await page.waitForTimeout(1000);
-        }
-        await page.waitForTimeout(1500);
-        continue;
-      }
-
-      const successBtn = page.locator('.swal2-confirm, button:has-text("OK")').filter({ visible: true }).first();
-      if (await successBtn.isVisible().catch(() => false)) {
-        await successBtn.click({ force: true });
-        await page.waitForTimeout(1500);
-        if (await page.locator('mat-row, tbody tr, tr').filter({ hasText: title }).first().isVisible().catch(() => false)) {
-          return true;
-        }
-        continue;
-      }
-
-      const finalBtn = await getEnabledDialogButton(dialog, /^(Create and set Stores|Create|Save|Submit|Next)$/);
-      if (await finalBtn.isVisible().catch(() => false)) {
-        if (await finalBtn.isEnabled().catch(() => false)) {
-          const buttonText = (await finalBtn.innerText().catch(() => '')).trim();
-          console.log(`INFO: Clicking campaign offer wizard button: ${buttonText}`);
-          await finalBtn.click({ force: true });
-          await page.waitForTimeout(4000);
-          const okBtn = page.locator('.swal2-confirm, button:has-text("OK")').filter({ visible: true }).first();
-          if (await okBtn.isVisible().catch(() => false)) {
-            await okBtn.click({ force: true });
-            await page.waitForTimeout(1500);
-          }
-          if (await page.locator('mat-row, tbody tr, tr').filter({ hasText: title }).first().isVisible().catch(() => false)) {
-            return true;
-          }
-          continue;
-        }
-
-        if (await page.locator('mat-row, tbody tr, tr').filter({ hasText: title }).first().isVisible().catch(() => false)) {
-          await page.keyboard.press('Escape').catch(() => {});
-          return true;
-        }
-      }
-
-      const nextBtn = await getEnabledDialogButton(dialog, /^Next$/);
-      if (await nextBtn.isVisible().catch(() => false) && await nextBtn.isEnabled().catch(() => false)) {
-        await nextBtn.click({ force: true });
-        await page.waitForTimeout(2000);
-        continue;
-      }
-
-      break;
-    }
-
-    if (await isOfferManagementOpen(page)) {
-      return await verifyOfferSearch(page, title);
-    }
-    return await page.locator('mat-row, tbody tr, tr').filter({ hasText: title }).first().isVisible().catch(() => false);
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   */
-  async function openOffersSection(page) {
-    await page.waitForTimeout(1500);
-
-    const waitForOffersList = async () => {
-      await page
-        .locator('h1, h2, h3, h4, .page-title')
-        .filter({ hasText: /Campaigns\s*-\s*Offer Management|Offer Management/i })
-        .first()
-        .waitFor({ state: 'visible', timeout: 10000 })
-        .catch(() => {});
-
-      return (await isOfferManagementOpen(page)) && !!(await getCreateCampaignOfferButton(page));
-    };
-
-    if (await waitForOffersList()) return true;
-
-    const offersHeading = page.locator('h5').filter({ hasText: /^Offers$/ }).first();
-    if (await offersHeading.isVisible({ timeout: 15000 }).catch(() => false)) {
-      console.log('✅ Offers heading found, clicking nearest card...');
-      await offersHeading.scrollIntoViewIfNeeded();
-      await offersHeading.evaluate((/** @type {{ closest: (arg0: string) => any; parentElement: any; }} */ heading) => {
-        const card = heading.closest('.plain-card, .card, [class*="plain-card"], [class*="card"]');
-        const target = card || heading.parentElement || heading;
-        target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-      });
-      await page.waitForTimeout(2500);
-      if (await waitForOffersList()) return true;
-    }
-
-    const offersCardAlt = page.locator(
-      'div.plain-card:has(h5:has-text("Offers")), .card:has(h5:has-text("Offers")), div.plain-card:has-text("Offer"), .card:has-text("Offer"), [cursor="pointer"]:has-text("Offers")'
-    ).first();
-    if (await offersCardAlt.isVisible({ timeout: 10000 }).catch(() => false)) {
-      console.log('✅ Offers card found (alternative selector), scrolling and clicking...');
-      await offersCardAlt.scrollIntoViewIfNeeded();
-      await page.waitForTimeout(500);
-      await offersCardAlt.click({ force: true });
-      await page.waitForTimeout(2500);
-      if (await waitForOffersList()) return true;
-    }
-
-    const offersTab = page.locator('[role="tab"]:has-text("Offers"), [role="tab"]:has-text("Offer")').first();
-    if (await offersTab.isVisible({ timeout: 10000 }).catch(() => false)) {
-      console.log('✅ Offers tab found, clicking...');
-      await offersTab.click({ force: true });
-      await page.waitForTimeout(2500);
-      if (await waitForOffersList()) return true;
-    }
-
-    const offersBtn = page.locator('button:has-text("Offers")').first();
-    if (await offersBtn.isVisible({ timeout: 10000 }).catch(() => false)) {
-      console.log('✅ Offers button found, clicking...');
-      await offersBtn.click({ force: true });
-      await page.waitForTimeout(2500);
-      if (await waitForOffersList()) return true;
-    }
-
-    if (await waitForOffersList()) return true;
-
-    console.log('⚠️ Offers section not found with any selector');
-    return false;
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {string} title
-   */
-  async function createOfferInView(page, title, options = {}) {
-    const {
-      // @ts-ignore
-      minOrderValue = '100',
-      // @ts-ignore
-      maxOrderValue = '5000',
-      // @ts-ignore
-      minOrderCount = '1',
-      // @ts-ignore
-      maxOrderCount = '10',
-      // @ts-ignore
-      maxCount = '100',
-      // @ts-ignore
-      maxCountPerUser = '1',
-      // @ts-ignore
-      discountMaxAmount = '100',
-      // @ts-ignore
-      discountValue = '10',
-      // @ts-ignore
-      selectTargetTypeIndex = 0,
-      // @ts-ignore
-      targetTypeText = null,
-      // @ts-ignore
-      selectOrderTypeIndex = 0,
-      // @ts-ignore
-      selectDiscountTypeIndex = 0,
-      // @ts-ignore
-      discountTypeText = null,
-      // @ts-ignore
-      operationalDayIndex = 0,
-      // @ts-ignore
-      dayTypeIndex = 0,
-      // @ts-ignore
-      startTimeIndex = 0,
-      // @ts-ignore
-      endTimeIndex = 1,
-    } = options;
-
-    await page.waitForTimeout(1500);
-
-    const createOfferBtn = await getCreateCampaignOfferButton(page);
-    
-    if (!createOfferBtn) {
-      console.log('WARNING: Offer Management Create button not found');
-      return false;
-    }
-
-    await createOfferBtn.scrollIntoViewIfNeeded();
-    await createOfferBtn.click({ force: true });
-    await page.waitForTimeout(800);
-
-    const createCampaignOfferMenuItem = page
-      .locator(
-        'button.mat-menu-item:has-text("Create Campaign Offer"), ' +
-        '[role="menuitem"]:has-text("Create Campaign Offer"), ' +
-        '.mat-menu-item:has-text("Create Campaign Offer")'
-      )
-      .last();
-    await createCampaignOfferMenuItem.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
-    if (await createCampaignOfferMenuItem.isVisible().catch(() => false)) {
-      await createCampaignOfferMenuItem.click({ force: true });
-      await page.waitForTimeout(1000);
-    } else if (await page.locator('mat-dialog-container, .modal-dialog, [role="dialog"]').first().isVisible().catch(() => false)) {
-      // form may have opened directly
-    } else {
-      await page.keyboard.press('Enter');
-      await page.waitForTimeout(1000);
-    }
-
-    await page.waitForTimeout(2500);
-
-    const dialog = page
-      .locator('mat-dialog-container, .modal-dialog, [role="dialog"]')
-      .filter({ hasText: /Create Campaign Offer/i })
-      .first();
-    if (!(await dialog.isVisible({ timeout: 15000 }).catch(() => false))) {
-      console.log('WARNING: Dialog did not appear');
-      return false;
-    }
-
-    const formTitle = dialog.locator('h1, h2, h3, h4, h5, h6').filter({ hasText: /Create Campaign Offer/i }).first();
-    await expect(formTitle).toBeVisible({ timeout: 15000 });
-
-    await selectDropdown(page, dialog, 'Order Type', selectOrderTypeIndex);
-    await selectDropdown(page, dialog, 'Target Type', selectTargetTypeIndex, targetTypeText);
-    await page.waitForTimeout(1000);
-
-    await fillFirstVisible(dialog, [
-      'input[formcontrolname="Name" i]',
-      'input[formcontrolname="Title" i]',
-      'mat-form-field:has-text("Name") input',
-      'input[placeholder*="Name" i]',
-    ], title);
-
-    await fillFirstVisible(dialog, [
-      'input[formcontrolname="ArabicName" i]',
-      'input[formcontrolname="NameArabic" i]',
-      'input[formcontrolname="TitleArabic" i]',
-      'mat-form-field:has-text("Arabic Name") input',
-      'input[placeholder*="Arabic Name" i]',
-    ], `Arabic ${title}`);
-
-    await fillFirstVisible(dialog, [
-      'textarea[formcontrolname="Description" i]',
-      'mat-form-field:has-text("Description") textarea',
-      'textarea[placeholder*="Description" i]',
-    ], 'Offer created through campaign view automation');
-
-    await fillFirstVisible(dialog, [
-      'textarea[formcontrolname="DescriptionArabic" i]',
-      'textarea[formcontrolname="ArabicDescription" i]',
-      'mat-form-field:has-text("Arabic Description") textarea',
-      'textarea[placeholder*="Arabic Description" i]',
-    ], 'Arabic offer created through campaign view automation');
-
-    await selectDropdown(page, dialog, 'Discount Type', selectDiscountTypeIndex, discountTypeText);
-    await fillFirstVisible(dialog, [
-      'input[formcontrolname="DiscountValue" i]',
-      'mat-form-field:has-text("Discount Value") input',
-      'input[placeholder*="Discount Value" i]',
-    ], discountValue);
-    await fillFirstVisible(dialog, [
-      'input[formcontrolname="DiscountMaxAmount" i]',
-      'mat-form-field:has-text("Discount Max Amount") input',
-      'mat-form-field:has-text("Discount Max") input',
-      'input[placeholder*="Discount Max" i]',
-    ], discountMaxAmount);
-
-    if (!(await fillFirstVisible(dialog, [
-        'input[formcontrolname="StartDate" i]',
-        'mat-form-field:has-text("Start Date") input',
-        'input[placeholder*="Start Date" i]',
-      ], START_DATE))) {
-      await selectCalendarDate(page, dialog, 0);
-    }
-    if (!(await fillFirstVisible(dialog, [
-        'input[formcontrolname="EndDate" i]',
-        'mat-form-field:has-text("End Date") input',
-        'input[placeholder*="End Date" i]',
-      ], END_DATE))) {
-      await selectCalendarDate(page, dialog, 1, true);
-    }
-
-    await fillFirstVisible(dialog, [
-      'input[formcontrolname="MaxCount" i]',
-      'mat-form-field:has-text("Max Count") input',
-    ], maxCount);
-    await fillFirstVisible(dialog, [
-      'input[formcontrolname="MaxCountPerUser" i]',
-      'mat-form-field:has-text("Max Count Per User") input',
-    ], maxCountPerUser);
-    await fillFirstVisible(dialog, [
-      'input[formcontrolname="MinOrderCount" i]',
-      'mat-form-field:has-text("Min Order Count") input',
-    ], minOrderCount);
-    await fillFirstVisible(dialog, [
-      'input[formcontrolname="MaxOrderCount" i]',
-      'mat-form-field:has-text("Max Order Count") input',
-    ], maxOrderCount);
-    await fillFirstVisible(dialog, [
-      'input[formcontrolname="MinOrderValue" i]',
-      'input[formcontrolname="MinOrderAmount" i]',
-      'mat-form-field:has-text("Min Order Amount") input',
-      'mat-form-field:has-text("Min Order Value") input',
-    ], minOrderValue);
-    await fillFirstVisible(dialog, [
-      'input[formcontrolname="MaxOrderValue" i]',
-      'input[formcontrolname="MaxOrderAmount" i]',
-      'mat-form-field:has-text("Max Order Amount") input',
-      'mat-form-field:has-text("Max Order Value") input',
-    ], maxOrderValue);
-
-    await selectDropdown(page, dialog, 'OperationalDay', operationalDayIndex);
-    await selectDropdown(page, dialog, 'Day Type', dayTypeIndex);
-    await selectDropdown(page, dialog, 'StartTime', startTimeIndex);
-    await selectDropdown(page, dialog, 'Start Time', startTimeIndex);
-    await selectDropdown(page, dialog, 'EndTime', endTimeIndex);
-    await selectDropdown(page, dialog, 'End Time', endTimeIndex);
-
-    const saveBtn = await getEnabledDialogButton(dialog, /^(Create|Save|Submit|Next)$/);
-    await saveBtn.waitFor({ state: 'visible', timeout: 15000 });
-    await expect(saveBtn).toBeEnabled({ timeout: 15000 });
-    await saveBtn.click({ force: true });
-    await page.waitForTimeout(2500);
-
-    const completed = await completeRemainingOfferSteps(page, title);
-    if (!completed) {
-      console.log(`WARNING: Campaign offer "${title}" was not confirmed in the table.`);
-      return false;
-    }
-
-    if (await dialog.isVisible().catch(() => false)) {
-      await page.keyboard.press('Escape').catch(() => {});
-      await dialog.locator('img:has-text("close"), button:has-text("Close"), [aria-label="Close"]').first().click({ force: true }).catch(() => {});
-    }
-
-    if (await page.locator('mat-row, tbody tr, tr').filter({ hasText: title }).first().isVisible().catch(() => false)) {
-      return true;
-    }
-
+  });
+
+  test('COF-07: Edit the offer discount value', async ({ page }) => {
+    await openOfferAction(page, 'Edit');
+    const dialog = H.campaignDialog(page).filter({ hasText: 'Edit Campaign Offer' });
+    await expect(dialog).toBeVisible({ timeout: 20000 });
+    await expect(dialog).toContainText(/\(1 of 2 Steps\)/);
+    await expect(dialog.locator('input[formcontrolname="Name"]')).toHaveValue(MAIN_OFFER, { timeout: 20000 });
+    await expect(dialog.locator('mat-select[formcontrolname="TargetType"]')).toContainText('Store');
+    await expect(dialog.locator('input[formcontrolname="StartDate"]')).toHaveValue(H.formatDDMMYYYY(START_DATE));
+    await expect(dialog.locator('input[formcontrolname="EndDate"]')).toHaveValue(H.formatDDMMYYYY(END_DATE));
+    await expect(dialog.locator('input[formcontrolname="DiscountValue"]')).toHaveValue('10');
+    await dialog.locator('input[formcontrolname="DiscountValue"]').fill(EDITED_VALUE);
+    await H.realClick(page, dialog.getByRole('button', { name: /^\s*Next\s*$/ }));
+    await expect(dialog).toContainText(/\(2 of 2 Steps\)/, { timeout: 20000 });
+    const submit = dialog.locator('button').filter({ hasText: /^\s*(Update|Edit|Save|Edit Campaign Offer)\s*$/ }).last();
+    await expect(submit).toBeEnabled({ timeout: 20000 });
+    const update = H.waitForApi(page, /api\/campaignOffer\/(update|edit)/i);
+    await H.realClick(page, submit);
+    const response = await update;
+    const text = await response.text();
+    expect(response.status(), `campaign offer update failed: ${text}`).toBe(200);
+    expect(text).toContain('SUCCESS');
+    const body = JSON.parse(response.request().postData() || '{}');
+    expect(body.Name).toBe(MAIN_OFFER);
+    expect(body.DiscountValue).toBe(Number(EDITED_VALUE));
     await expect(dialog).toBeHidden({ timeout: 20000 });
-    return true;
-  }
 
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {string} title
-   */
-  async function createStaticOfferInView(page, title) {
-    return await createOfferInView(page, title, {
-      targetTypeText: 'Store',
-      minOrderValue: '0',
-      discountMaxAmount: '0',
-    });
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {string} title
-   */
-  async function createAmountOfferInView(page, title) {
-    return await createOfferInView(page, title, {
-      discountTypeText: 'Amount',
-      selectDiscountTypeIndex: 1,
-      discountValue: '15',
-      discountMaxAmount: '0',
-      minOrderValue: '100',
-    });
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {string} title
-   * @param {string} targetTypeText
-   */
-  async function createTargetTypeOfferInView(page, title, targetTypeText) {
-    const targetTypeIndexByText = {
-      Store: 0,
-      Category: 1,
-      Item: 2,
-    };
-    return await createOfferInView(page, title, {
-      targetTypeText,
-      // @ts-ignore
-      selectTargetTypeIndex: targetTypeIndexByText[targetTypeText] ?? 0,
-      discountValue: '10',
-      discountMaxAmount: '100',
-      minOrderValue: '100',
-    });
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {string} term
-   */
-  async function verifyOfferSearch(page, term) {
-    await page.waitForTimeout(2000);
-    const searchInput = page.locator('input[placeholder*="Search" i], input[aria-label*="search" i], input[matinput], input.mat-input-element').first();
-    if (!(await searchInput.isVisible().catch(() => false))) {
-      console.log('⚠️ Search input not found');
-      return false;
-    }
-
-    await searchInput.click({ force: true });
-    await searchInput.fill(term);
-    await page.waitForTimeout(1500);
-    await page.keyboard.press('Enter');
-    await page.waitForTimeout(2500);
-
-    const resultRow = page.locator('mat-row, tbody tr, tr').filter({ hasText: term }).first();
-    if (await resultRow.isVisible().catch(() => false)) {
-      console.log('✅ Search result found');
-      return true;
-    }
-
-    const searchBtn = page.locator('button:has(mat-icon:has-text("search")), button:has-text("Search"), button[aria-label*="search" i]').first();
-    if (await searchBtn.isVisible().catch(() => false)) {
-      await searchBtn.click({ force: true });
-      await page.waitForTimeout(2000);
-      if (await resultRow.isVisible().catch(() => false)) {
-        console.log('✅ Search result found after button click');
-        return true;
-      }
-    }
-
-    console.log('⚠️ Search result not found for term:', term);
-    return false;
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {string} title
-   */
-  async function searchAndGetOfferRow(page, title) {
-    const found = await verifyOfferSearch(page, title);
-    expect(found).toBeTruthy();
-
-    const row = page.locator('mat-row, tbody tr, tr').filter({ hasText: title }).first();
-    await row.waitFor({ state: 'visible', timeout: 15000 });
-    return row;
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {string} title
-   */
-  async function openOfferActionMenu(page, title) {
-    const row = await searchAndGetOfferRow(page, title);
-    const actionCell = row.locator('td, mat-cell, .mat-cell, [role="cell"]').last();
-    const actionBtn = actionCell
-      .locator('.mat-menu-trigger, button[mat-icon-button], button, i.mar-icon-more-h, i.mar-icon-more-v, mat-icon, img')
-      .last();
-
-    await actionBtn.scrollIntoViewIfNeeded().catch(() => {});
-    await actionBtn.waitFor({ state: 'visible', timeout: 10000 });
-    await actionBtn.evaluate((node) => {
-      const target = node.closest('button, [role="button"], .mat-menu-trigger') || node;
-      target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-    }).catch(async () => {
-      await actionBtn.click({ force: true });
-    });
-    await page.waitForTimeout(700);
-
-    const menu = page.locator('.mat-menu-panel, [role="menu"], .cdk-overlay-pane, .dropdown-menu').filter({ visible: true }).first();
-    await menu.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {RegExp} labelPattern
-   */
-  async function clickOfferAction(page, labelPattern) {
-    const menuItem = page
-      .locator('button.mat-menu-item, [role="menuitem"], .dropdown-item, li, a')
-      .filter({ hasText: labelPattern })
-      .first();
-
-    await menuItem.waitFor({ state: 'visible', timeout: 10000 });
-    const label = ((await menuItem.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-    console.log(`INFO: Clicking offer action: ${label || labelPattern}`);
-    await menuItem.click({ force: true });
-    await page.waitForTimeout(1500);
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   */
-  async function dismissSuccessPopup(page) {
-    const okBtn = page.locator('.swal2-confirm, button:has-text("OK")').filter({ visible: true }).first();
-    if (await okBtn.isVisible().catch(() => false)) {
-      await okBtn.click({ force: true });
-      await page.waitForTimeout(1000);
-      return true;
-    }
-    return false;
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   */
-  async function closeOfferActionSurface(page) {
-    await dismissSuccessPopup(page);
-
-    const visibleDialog = page.locator('modal-container, mat-dialog-container, .modal-dialog, [role="dialog"]').filter({ visible: true }).last();
-    if (await visibleDialog.isVisible().catch(() => false)) {
-      await visibleDialog.evaluate((dialog) => {
-        const elements = Array.from(dialog.querySelectorAll('button, img, mat-icon, [role="button"]'));
-        const closeEl = elements.find((el) => {
-          const text = `${el.textContent || ''} ${el.getAttribute('alt') || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('class') || ''}`.toLowerCase();
-          return text.includes('close');
-        }) || elements[0];
-        if (closeEl) {
-          const target = closeEl.closest('button, [role="button"], [class*="close"], .cursor-pointer') || closeEl.parentElement || closeEl;
-          target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-        }
-      }).catch(async () => {
-        await page.keyboard.press('Escape').catch(() => {});
-      });
-      await page.waitForTimeout(1200);
-    }
-
-    const pageCancelBtn = page
-      .locator('button:has-text("Cancel"), button:has-text("Back")')
-      .filter({ visible: true })
-      .last();
-    const fullPageStoreHeading = page
-      .locator('h1, h2, h3, h4, .page-title')
-      .filter({ hasText: /Set Stores|Manage Stores|Offer Management/i })
-      .first();
-    if (await fullPageStoreHeading.isVisible().catch(() => false) && await pageCancelBtn.isVisible().catch(() => false)) {
-      await pageCancelBtn.click({ force: true }).catch(() => {});
-      await page.waitForTimeout(1500);
-    }
-
-    const stillOnStorePage = page
-      .locator('h1, h2, h3, h4, .page-title')
-      .filter({ hasText: /Set Stores|Manage Stores/i })
-      .first();
-    if (await stillOnStorePage.isVisible().catch(() => false)) {
-      const storeBackBtn = page.locator('mat-icon.back-bt, .back-bt, mat-icon:has-text("arrow_back_ios"), img:has-text("arrow_back_ios")').first();
-      if (await storeBackBtn.isVisible().catch(() => false)) {
-        await storeBackBtn.click({ force: true }).catch(() => {});
-        await page.waitForTimeout(2000);
-      }
-    }
-
-    const closeBtn = page
-      .locator(
-        'modal-container img:has-text("close"), mat-dialog-container img:has-text("close"), ' +
-        'modal-container button:has-text("Close"), mat-dialog-container button:has-text("Close"), ' +
-        '[role="dialog"] button[aria-label="Close"], [role="dialog"] img:has-text("close")'
-      )
-      .filter({ visible: true })
-      .first();
-    if (await closeBtn.isVisible().catch(() => false)) {
-      await closeBtn.click({ force: true }).catch(() => {});
-      await page.waitForTimeout(1200);
-      return;
-    }
-
-    const backBtn = page.locator('mat-icon.back-bt, .back-bt, mat-icon:has-text("arrow_back_ios"), button:has(mat-icon:has-text("arrow_back"))').first();
-    if (await backBtn.isVisible().catch(() => false)) {
-      await backBtn.click({ force: true }).catch(() => {});
-      await page.waitForTimeout(1500);
-      return;
-    }
-
-    await page.keyboard.press('Escape').catch(() => {});
-    await page.waitForTimeout(700);
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {string} title
-   */
-  async function editCreatedOffer(page, title) {
-    await openOfferActionMenu(page, title);
-    await clickOfferAction(page, /Edit/i);
-
-    const dialog = page.locator('modal-container, mat-dialog-container, .modal-dialog, [role="dialog"]').filter({ visible: true }).last();
-    if (await dialog.isVisible().catch(() => false)) {
-      await fillFirstVisible(dialog, [
-        'textarea[formcontrolname="Description" i]',
-        'mat-form-field:has-text("Description") textarea',
-        'textarea[placeholder*="Description" i]',
-      ], `Edited campaign offer ${title}`);
-
-      const nextBtn = dialog.locator('button:has-text("Next"), button:has-text("Update"), button:has-text("Save")').filter({ visible: true }).last();
-      if (await nextBtn.isVisible().catch(() => false) && await nextBtn.isEnabled().catch(() => false)) {
-        const buttonText = ((await nextBtn.innerText().catch(() => '')) || '').trim();
-        console.log(`INFO: Saving edited offer data via: ${buttonText}`);
-        await nextBtn.click({ force: true });
-        await page.waitForTimeout(2000);
-
-        const secondStepDialog = page.locator('modal-container, mat-dialog-container, .modal-dialog, [role="dialog"]').filter({ visible: true }).last();
-        const updateBtn = secondStepDialog.locator('button:has-text("Update"), button:has-text("Save"), button:has-text("Submit")').filter({ visible: true }).last();
-        if (await updateBtn.isVisible().catch(() => false) && await updateBtn.isEnabled().catch(() => false)) {
-          console.log('INFO: Clicking final edit Update button.');
-          await updateBtn.click({ force: true }).catch(() => {});
-          await page.waitForTimeout(2000);
-        }
-        await dismissSuccessPopup(page);
-      }
-    }
-
-    await closeOfferActionSurface(page);
-    await ensureCampaignOfferManagementPage(page);
-    await searchAndGetOfferRow(page, title);
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   */
-  async function returnFromOfferSubPage(page) {
-    if (page.url().includes('/offer/set-store') || page.url().includes('/offer/manage-store')) {
-      await page.goBack({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-      await page.waitForTimeout(2500);
-    } else {
-      await closeOfferActionSurface(page);
-    }
-    if (!(await isOfferManagementOpen(page))) {
-      await closeOfferActionSurface(page);
-    }
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   */
-  async function ensureCampaignOfferManagementPage(page) {
-    const searchInput = page.locator('input[placeholder*="Search" i], input[aria-label*="search" i], input[matinput], input.mat-input-element').first();
-    if ((await isOfferManagementOpen(page)) && await searchInput.isVisible().catch(() => false)) {
-      return;
-    }
-
-    await goToPage(page, '#/home/campaigns');
-    await page.waitForLoadState('domcontentloaded').catch(() => {});
-    await openLatestCampaignView(page);
-    const openedOffers = await openOffersSection(page);
-    if (!openedOffers) {
-      test.skip(true, 'Campaign Offer section is not available for the selected campaign in this environment.');
-    }
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   */
-  async function saveSetStoresPage(page) {
-    const saveBtn = page.locator('button:has-text("Set Stores"), button:has-text("Save"), button:has-text("Update")').filter({ visible: true }).last();
-    if (await saveBtn.isVisible().catch(() => false) && await saveBtn.isEnabled().catch(() => false)) {
-      await saveBtn.click({ force: true });
-      await page.waitForTimeout(2000);
-      await dismissSuccessPopup(page);
-      return true;
-    }
-    return false;
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {string} title
-   */
-  async function removeFirstStoreFromSetStores(page, title) {
-    await openOfferActionMenu(page, title);
-    await clickOfferAction(page, /Set\s*Stores?/i);
-    await page.waitForTimeout(2000);
-
-    const selectedStore = page
-      .locator('.selected-stores li, .selected-stores mat-list-option, app-record-picker li, .listbox li, ul li, mat-list-option')
-      .filter({ visible: true })
-      .last();
-
-    await selectedStore.waitFor({ state: 'visible', timeout: 15000 });
-    const storeName = ((await selectedStore.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
-    console.log(`INFO: Removing first selected store from Set Stores: ${storeName}`);
-    await selectedStore.scrollIntoViewIfNeeded().catch(() => {});
-    await selectedStore.click({ force: true });
-    const box = await selectedStore.boundingBox().catch(() => null);
-    if (box) {
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-      await page.mouse.down();
-      await page.mouse.up();
-      await page.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2).catch(() => {});
-    }
-    await selectedStore.evaluate((node) => {
-      node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-      node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-      node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-    }).catch(() => {});
-    await page.waitForTimeout(700);
-
-    const removeBtn = page.locator('button:has-text("Remove"), button[name="removeBtn"], button:has(mat-icon:has-text("chevron_left"))').filter({ visible: true }).first();
-    await expect(removeBtn).toBeEnabled({ timeout: 10000 });
-    await removeBtn.click({ force: true });
-    await page.waitForTimeout(1000);
-
-    await saveSetStoresPage(page);
-    await returnFromOfferSubPage(page);
-    await ensureCampaignOfferManagementPage(page);
-    await searchAndGetOfferRow(page, title);
-  }
-
-  /**
-   * @param {import("playwright-core").Locator} context
-   */
-  async function setIsActiveFalse(context) {
-    const slideToggle = context.locator('mat-slide-toggle:has-text("Is Active"), mat-slide-toggle[formcontrolname*="Active" i], mat-slide-toggle').first();
-    if (await slideToggle.isVisible().catch(() => false)) {
-      const isChecked = (await slideToggle.getAttribute('aria-checked').catch(() => null)) === 'true' ||
-        ((await slideToggle.getAttribute('class').catch(() => '')) || '').includes('mat-checked');
-      if (isChecked) {
-        await slideToggle.click({ force: true });
-        await context.page().waitForTimeout(700);
-      }
-      return true;
-    }
-
-    const checkbox = context.locator('mat-checkbox:has-text("Is Active"), mat-checkbox[formcontrolname*="Active" i], input[type="checkbox"]').first();
-    if (await checkbox.isVisible().catch(() => false)) {
-      const isChecked = (await checkbox.getAttribute('aria-checked').catch(() => null)) === 'true' ||
-        await checkbox.locator('input[type="checkbox"]').first().isChecked().catch(() => false);
-      if (isChecked) {
-        await checkbox.click({ force: true });
-        await context.page().waitForTimeout(700);
-      }
-      return true;
-    }
-
-    return false;
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {string} title
-   */
-  async function deactivateFirstStoreFromManageStores(page, title) {
-    await openOfferActionMenu(page, title);
-    await clickOfferAction(page, /Manage\s*Stores?/i);
-    await page.waitForTimeout(2500);
-
-    const firstRow = page.locator('mat-row, tbody tr, tr').filter({ hasText: /True|False/i }).first();
-    await firstRow.waitFor({ state: 'visible', timeout: 20000 });
-
-    const inlineChanged = await setIsActiveFalse(firstRow);
-    if (!inlineChanged) {
-      const editBtn = firstRow
-        .locator('button:has-text("Edit"), [role="button"]:has-text("Edit"), button:has(img), mat-icon:has-text("edit"), img:has-text("edit"), .mat-menu-trigger, button[mat-icon-button], button')
-        .last();
-      await editBtn.click({ force: true });
-      await page.waitForTimeout(1000);
-
-      const editMenuItem = page.locator('button.mat-menu-item, [role="menuitem"], .dropdown-item').filter({ hasText: /Edit/i }).first();
-      if (await editMenuItem.isVisible().catch(() => false)) {
-        await editMenuItem.click({ force: true });
-        await page.waitForTimeout(1000);
-      }
-
-      const dialog = page.locator('modal-container, mat-dialog-container, .modal-dialog, [role="dialog"]').filter({ visible: true }).last();
-      await expect(dialog).toBeVisible({ timeout: 15000 });
-      const changed = await setIsActiveFalse(dialog);
-      expect(changed).toBeTruthy();
-
-      const saveBtn = await getEnabledDialogButton(dialog, /^(Update|Save|Submit)$/);
-      await expect(saveBtn).toBeEnabled({ timeout: 10000 });
-      await saveBtn.click({ force: true });
-      await page.waitForTimeout(2000);
-      await dismissSuccessPopup(page);
-      await closeOfferActionSurface(page);
-    } else {
-      const saveBtn = page.locator('button:has-text("Update"), button:has-text("Save"), button:has-text("Submit")').filter({ visible: true }).last();
-      if (await saveBtn.isVisible().catch(() => false) && await saveBtn.isEnabled().catch(() => false)) {
-        await saveBtn.click({ force: true });
-        await page.waitForTimeout(2000);
-        await dismissSuccessPopup(page);
-      }
-    }
-
-    await returnFromOfferSubPage(page);
-    await ensureCampaignOfferManagementPage(page);
-    await searchAndGetOfferRow(page, title);
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {string} title
-   */
-  async function viewCreatedOffer(page, title) {
-    await openOfferActionMenu(page, title);
-    await clickOfferAction(page, /View/i);
-    await page.waitForTimeout(2000);
-    await closeOfferActionSurface(page);
-    const searchInput = page.locator('input[placeholder*="Search" i], input[aria-label*="search" i], input[matinput], input.mat-input-element').first();
-    if (page.url().includes('/offer/view') || !(await searchInput.isVisible().catch(() => false))) {
-      await page.goBack({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-      await page.waitForTimeout(2500);
-    }
-    if (!(await searchInput.isVisible().catch(() => false))) {
-      const backBtn = page.locator('mat-icon.back-bt, .back-bt, mat-icon:has-text("arrow_back_ios"), img:has-text("arrow_back_ios")').first();
-      if (await backBtn.isVisible().catch(() => false)) {
-        await backBtn.click({ force: true }).catch(() => {});
-        await page.waitForTimeout(2500);
-      } else {
-        await closeOfferActionSurface(page);
-      }
-    }
-    await searchAndGetOfferRow(page, title);
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {string} title
-   */
-  async function deleteCreatedOffer(page, title) {
-    await openOfferActionMenu(page, title);
-    await clickOfferAction(page, /Delete/i);
-
-    const confirmBtn = page
-      .locator(
-        '.swal2-popup button.swal2-confirm, ' +
-        'button.swal2-confirm, ' +
-        'mat-dialog-container button:has-text("Yes"), ' +
-        'button:has-text("Confirm"), ' +
-        'button:has-text("Delete"):not([role="menuitem"])'
-      )
-      .filter({ visible: true })
-      .first();
-
-    if (await confirmBtn.isVisible().catch(() => false)) {
-      await confirmBtn.click({ force: true });
-      await page.waitForTimeout(2000);
-    } else {
-      await page.keyboard.press('Enter').catch(() => {});
-      await page.waitForTimeout(1500);
-    }
-
-    await dismissSuccessPopup(page);
-    await page.waitForTimeout(1500);
-
-    const searchInput = page.locator('input[placeholder*="Search" i], input[aria-label*="search" i], input[matinput], input.mat-input-element').first();
-    if (await searchInput.isVisible().catch(() => false)) {
-      await searchInput.click({ force: true });
-      await searchInput.fill(title);
-      await page.keyboard.press('Enter');
-      await page.waitForTimeout(2500);
-    }
-
-    const deletedRow = page.locator('mat-row, tbody tr, tr').filter({ hasText: title }).first();
-    await expect(deletedRow).toHaveCount(0, { timeout: 15000 });
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {string} title
-   */
-  async function runCreatedOfferActions(page, title) {
-    await editCreatedOffer(page, title);
-    await removeFirstStoreFromSetStores(page, title);
-    await deactivateFirstStoreFromManageStores(page, title);
-    await viewCreatedOffer(page, title);
-    await deleteCreatedOffer(page, title);
-  }
-
-  /**
-   * @param {import("playwright-core").Page} page
-   */
-  async function openCampaignOffersPage(page) {
-    await loginToApp(page);
-    await goToPage(page, '#/home/campaigns');
-    await page.waitForLoadState('domcontentloaded');
-    await openLatestCampaignView(page);
-
-    const openedOffers = await openOffersSection(page);
-    if (!openedOffers) {
-      test.skip(true, 'Campaign Offer section is not available for the selected campaign in this environment.');
-    }
-  }
-
-  test('COF-00: Verify Campaign Offer management page and create action', async ({ page }) => {
-    test.setTimeout(180000);
-
-    await openCampaignOffersPage(page);
-
-    const tableOrEmpty = page.locator('mat-table, table, mat-row, tbody tr')
-      .or(page.getByText(/No\s+(Data|Records|Results)|Total\s+0\s+results/i))
-      .first();
-    await expect(tableOrEmpty).toBeVisible({ timeout: 20000 });
-
-    const createButton = await getCreateCampaignOfferButton(page);
-    expect(createButton).not.toBeNull();
-    // @ts-ignore
-    await expect(createButton).toBeVisible({ timeout: 15000 });
+    await H.gotoCampaignSection(page, CAMPAIGN_NAME, O.OFFER_SECTION.section, O.OFFER_SECTION.heading);
+    await openOfferAction(page, 'View');
+    await page.waitForURL(/#\/home\/campaigns\/offer\/view/, { timeout: 30000 });
+    await expect(page.getByText('DISCOUNT VALUE', { exact: true })).toBeVisible({ timeout: 30000 });
+    await expect(page.getByText(EDITED_VALUE, { exact: true }).first()).toBeVisible();
   });
 
-  // ============================================================
-  // COF-01: Create Percentage Campaign Offer
-  // Run: npx playwright test tests/12-Campaigns/02.2-offers.spec.js -g "COF-01"
-  // ============================================================
-  test('COF-01: Create percentage campaign offer from Campaign View Offers', async ({ page }) => {
-    test.setTimeout(420000);
-
-    await openCampaignOffersPage(page);
-
-    const offerTitle = `Campaign Offer ${Date.now().toString().slice(-5)}`;
-    const created = await createOfferInView(page, offerTitle);
-    expect(created).toBeTruthy();
-
-    const found = await verifyOfferSearch(page, offerTitle);
-    expect(found).toBeTruthy();
-
-    await runCreatedOfferActions(page, offerTitle);
+  test('COF-08: Delete the offer (cancel first, then confirm)', async ({ page }) => {
+    await H.cancelSectionRowDelete(page, await O.findOfferRow(page, MAIN_OFFER), O.OFFER_SECTION.deleteApi);
+    await deleteOffer(page, MAIN_OFFER);
   });
 
-  // ============================================================
-  // COF-02: Create Static Campaign Offer
-  // Run: npx playwright test tests/12-Campaigns/02.2-offers.spec.js -g "COF-02"
-  // ============================================================
-  test('COF-02: Create static campaign offer from Campaign View Offers', async ({ page }) => {
-    test.setTimeout(420000);
-
-    await openCampaignOffersPage(page);
-
-    const offerTitle = `Static Campaign Offer ${Date.now().toString().slice(-5)}`;
-    const created = await createStaticOfferInView(page, offerTitle);
-    expect(created).toBeTruthy();
-
-    const found = await verifyOfferSearch(page, offerTitle);
-    expect(found).toBeTruthy();
-
-    await runCreatedOfferActions(page, offerTitle);
+  test('COF-09: Create, verify and delete an Amount Store offer', async ({ page }) => {
+    const name = `QA Offer Amt ${RUN_STAMP}`;
+    const { body } = await createOffer(page, { name, discountType: 'Amount', discountValue: '1', minOrderAmount: '5' });
+    expect(body.DiscountType).toBe('AMOUNT');
+    expect(body.DiscountValue).toBe(1);
+    const row = await O.findOfferRow(page, name);
+    await expect(row.locator('td').nth(7)).toHaveText('Store');
+    await deleteOffer(page, name);
   });
 
-  // ============================================================
-  // COF-03: Create Amount Discount Campaign Offer
-  // Run: npx playwright test tests/12-Campaigns/02.2-offers.spec.js -g "COF-03"
-  // ============================================================
-  test('COF-03: Create amount discount campaign offer from Campaign View Offers', async ({ page }) => {
-    test.setTimeout(420000);
-
-    await openCampaignOffersPage(page);
-
-    const offerTitle = `Amount Campaign Offer ${Date.now().toString().slice(-5)}`;
-    const created = await createAmountOfferInView(page, offerTitle);
-    expect(created).toBeTruthy();
-
-    const found = await verifyOfferSearch(page, offerTitle);
-    expect(found).toBeTruthy();
-
-    await runCreatedOfferActions(page, offerTitle);
+  test('COF-10: Create, verify and delete a Category offer for a Food House category', async ({ page }) => {
+    const name = `QA Offer Cat ${RUN_STAMP}`;
+    const { body, chosen } = await createOffer(page, { name, targetType: 'Category' });
+    expect(chosen).toHaveLength(1);
+    expect(body.Categories, `category "${chosen[0]}" is sent`).toHaveLength(1);
+    const row = await O.findOfferRow(page, name);
+    await expect(row.locator('td').nth(7)).toHaveText('Category');
+    await deleteOffer(page, name);
   });
 
-  // ============================================================
-  // COF-04: Create Store Target Type Campaign Offer
-  // Run: npx playwright test tests/12-Campaigns/02.2-offers.spec.js -g "COF-04"
-  // ============================================================
-  test('COF-04: Create store target type campaign offer from Campaign View Offers', async ({ page }) => {
-    test.setTimeout(420000);
-
-    await openCampaignOffersPage(page);
-
-    const offerTitle = `Store Target Offer ${Date.now().toString().slice(-5)}`;
-    const created = await createTargetTypeOfferInView(page, offerTitle, 'Store');
-    expect(created).toBeTruthy();
-
-    const found = await verifyOfferSearch(page, offerTitle);
-    expect(found).toBeTruthy();
-
-    await runCreatedOfferActions(page, offerTitle);
+  test('COF-11: Create, verify and delete an Item offer for a Food House item', async ({ page }) => {
+    const name = `QA Offer Item ${RUN_STAMP}`;
+    const { body, chosen } = await createOffer(page, { name, targetType: 'Item', orderType: 'Both' });
+    expect(chosen).toHaveLength(1);
+    expect(body.Items, `item "${chosen[0]}" is sent`).toHaveLength(1);
+    const row = await O.findOfferRow(page, name);
+    await expect(row.locator('td').nth(6)).toHaveText('Both');
+    await expect(row.locator('td').nth(7)).toHaveText('Item');
+    await deleteOffer(page, name);
   });
 
-  // ============================================================
-  // COF-05: Create Category Target Type Campaign Offer
-  // Run: npx playwright test tests/12-Campaigns/02.2-offers.spec.js -g "COF-05"
-  // ============================================================
-  test('COF-05: Create category target type campaign offer from Campaign View Offers', async ({ page }) => {
-    test.setTimeout(420000);
-
-    await openCampaignOffersPage(page);
-
-    const offerTitle = `Category Target Offer ${Date.now().toString().slice(-5)}`;
-    const created = await createTargetTypeOfferInView(page, offerTitle, 'Category');
-    expect(created).toBeTruthy();
-
-    const found = await verifyOfferSearch(page, offerTitle);
-    expect(found).toBeTruthy();
-
-    await runCreatedOfferActions(page, offerTitle);
+  test('COF-12: Create, verify, view and delete a Highlighted item offer for Food House', async ({ page }) => {
+    const name = `QA Offer HL ${RUN_STAMP}`;
+    createdOffers.add(name);
+    const { item } = await O.createHighlightedOffer(page, { name, store: FOOD_HOUSE, start: START_DATE, end: END_DATE });
+    expect(item, 'an item was picked').toBeTruthy();
+    const row = await O.findOfferRow(page, name);
+    await expect(row.locator('td').nth(5)).toHaveText('Highlighted');
+    await expect(row.locator('td').nth(6)).toHaveText('Both');
+    await expect(row.locator('td').nth(7)).toHaveText('Item');
+    await expect(row.locator('td').nth(8)).toHaveText('True');
+    const panel = await H.openRowMenu(page, row);
+    expect(await H.menuLabels(panel), 'highlighted offers have no store actions').toEqual(['Analytics', 'Edit', 'View', 'Delete']);
+    await H.clickMenuItem(page, panel, 'View');
+    await page.waitForURL(/#\/home\/campaigns\/offer\/view/, { timeout: 30000 });
+    await H.waitForSpinner(page);
+    await expect(page.getByText(name, { exact: true })).toBeVisible({ timeout: 30000 });
+    for (const [label, value] of [['OFFER TYPE', 'HIGHLIGHTED'], ['ORDER TYPE', 'BOTH'], ['TARGET TYPE', 'ITEM']]) {
+      await expect(page.getByText(label, { exact: true }), label).toBeVisible();
+      await expect(page.getByText(value, { exact: true }).first(), `${label} = ${value}`).toBeVisible();
+    }
+    await H.gotoCampaignSection(page, CAMPAIGN_NAME, O.OFFER_SECTION.section, O.OFFER_SECTION.heading);
+    await deleteOffer(page, name);
   });
 
-  // ============================================================
-  // COF-06: Create Item Target Type Campaign Offer
-  // Run: npx playwright test tests/12-Campaigns/02.2-offers.spec.js -g "COF-06"
-  // ============================================================
-  test('COF-06: Create item target type campaign offer from Campaign View Offers', async ({ page }) => {
-    test.setTimeout(420000);
+  test(`COF-13: Set Stores adds ${CAFE_ASIANA} to an offer and Manage Stores activates it there`, async ({ page }) => {
+    const name = `QA Offer Stores ${RUN_STAMP}`;
+    const { body } = await createOffer(page, { name });
+    const foodHouseId = body.StoreIds[0];
+    const listed = await H.searchSection(page, name, O.OFFER_LIST_API);
+    const offerId = listed.Items.find((/** @type {{Name: string}} */ i) => i.Name === name).Id;
 
-    await openCampaignOffersPage(page);
+    const panel = await H.openRowMenu(page, await O.findOfferRow(page, name));
+    await H.clickMenuItem(page, panel, 'Set Stores');
+    await page.waitForURL(/#\/home\/campaigns\/offer\/set-store/, { timeout: 30000 });
+    await expect(page.locator('h4, h3').filter({ hasText: 'Set Stores - Offer Management' }).first()).toBeVisible({ timeout: 30000 });
+    await expect(page.locator('dual-list .listbox').nth(1).locator('li').filter({ hasText: H.exactText(FOOD_HOUSE) })).toHaveCount(1, { timeout: 20000 });
+    await H.addToDualList(page, page.locator('body'), [CAFE_ASIANA]);
+    const save = H.waitForApi(page, /api\/campaignOffer\/setStoresForCampaignOffer/);
+    const infos = H.waitForApi(page, /api\/campaignOffer\/getCampaignOfferStoreInfos/, { timeout: 90000 });
+    await H.realClick(page, page.getByRole('button', { name: /^\s*Set Stores\s*$/ }));
+    const saved = await save;
+    expect(await saved.text()).toContain('SUCCESS');
+    const saveBody = JSON.parse(saved.request().postData() || '{}');
+    expect(saveBody.CampaignOfferId).toBe(offerId);
+    expect(saveBody.StoreIds).toHaveLength(2);
+    expect(saveBody.StoreIds).toContain(foodHouseId);
+    // Saving lands on Manage Stores; the added store starts inactive.
+    await page.waitForURL(/#\/home\/campaigns\/offer\/manage-store/, { timeout: 30000 });
+    const status = (/** @type {any} */ list) => Object.fromEntries(list.Items.map((/** @type {{StoreName: string, IsActive: boolean}} */ i) => [i.StoreName, i.IsActive]));
+    expect(status(await (await infos).json())).toEqual({ [FOOD_HOUSE]: true, [CAFE_ASIANA]: false });
+    const cafeRow = H.sectionRow(page, CAFE_ASIANA);
+    await expect(cafeRow.locator('td').nth(1)).toHaveText('False', { timeout: 20000 });
 
-    const offerTitle = `Item Target Offer ${Date.now().toString().slice(-5)}`;
-    const created = await createTargetTypeOfferInView(page, offerTitle, 'Item');
-    expect(created).toBeTruthy();
+    await H.realClick(page, cafeRow.locator('button[mattooltip="Edit"]'));
+    const dialog = H.campaignDialog(page).filter({ hasText: CAFE_ASIANA });
+    await expect(dialog).toBeVisible({ timeout: 20000 });
+    await expect(dialog).toContainText(name);
+    const isActive = dialog.locator('mat-slide-toggle[formcontrolname="IsActive"]');
+    await expect(isActive).not.toHaveClass(/mat-checked/, { timeout: 15000 });
+    await expect(dialog.locator('mat-slide-toggle[formcontrolname="IsIncludeAddOns"]')).toBeVisible();
+    await expect(dialog.locator('mat-slide-toggle[formcontrolname="IsPrimary"]')).toBeVisible();
+    await H.realClick(page, isActive.locator('label').first());
+    await expect(isActive).toHaveClass(/mat-checked/);
+    const edit = H.waitForApi(page, /api\/campaignOffer\/editSingleStoreOffer/);
+    const refreshed = H.waitForApi(page, /api\/campaignOffer\/getCampaignOfferStoreInfos/);
+    await H.realClick(page, dialog.getByRole('button', { name: /^\s*Update\s*$/ }));
+    const edited = await edit;
+    expect(await edited.text()).toContain('SUCCESS');
+    const editBody = JSON.parse(edited.request().postData() || '{}');
+    expect(editBody.CampaignOfferId).toBe(offerId);
+    expect(editBody.IsActive).toBe(true);
+    expect(editBody.StoreId).not.toBe(foodHouseId);
+    await expect(dialog).toBeHidden({ timeout: 20000 });
+    expect(status(await (await refreshed).json())).toEqual({ [FOOD_HOUSE]: true, [CAFE_ASIANA]: true });
+    await expect(cafeRow.locator('td').nth(1)).toHaveText('True', { timeout: 20000 });
 
-    const found = await verifyOfferSearch(page, offerTitle);
-    expect(found).toBeTruthy();
-
-    await runCreatedOfferActions(page, offerTitle);
+    await H.gotoCampaignSection(page, CAMPAIGN_NAME, O.OFFER_SECTION.section, O.OFFER_SECTION.heading);
+    await deleteOffer(page, name);
   });
-
 });

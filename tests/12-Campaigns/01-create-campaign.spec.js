@@ -26,7 +26,7 @@ test.describe.serial('01 - Create Campaign', () => {
   });
 
   test.afterAll(async ({ browser }) => {
-    test.setTimeout(180000);
+    test.setTimeout(300000);
     await H.deleteCampaignIfPresent(browser, CAMPAIGN_NAME);
   });
 

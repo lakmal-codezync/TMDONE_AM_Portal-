@@ -101,7 +101,10 @@ export function requireCredentials() {
     CREDENTIALS.password === 'your-password';
 
   if (!CREDENTIALS.email || !CREDENTIALS.password || hasPlaceholder) {
-    test.skip(true, 'Set real TMDONE_EMAIL and TMDONE_PASSWORD values in .env, environment variables, or GitHub Actions secrets.');
+    const message = 'Set real TMDONE_EMAIL and TMDONE_PASSWORD values in .env, environment variables, or GitHub Actions secrets.';
+    // In CI missing secrets must fail the run, not skip every test.
+    if (process.env.CI) throw new Error(message);
+    test.skip(true, message);
   }
 }
 
@@ -184,11 +187,20 @@ async function getSweetAlertText(page) {
   return (await alert.innerText().catch(() => '')).trim();
 }
 
+// The sign-in form's username field. Never a generic `input`: when the session is still
+// valid the app redirects away from sign-in, and the first input on that page may be a checkbox.
+/** @param {import('@playwright/test').Page} page */
+const usernameField = (page) =>
+  page.locator('input[formcontrolname="username"], input[type="email"], input[formcontrolname*="email" i]').first();
+
+/** @param {import('@playwright/test').Page} page */
+const appShell = (page) => page.locator('li.user_profile').first(); // header profile menu: only rendered when signed in
+
 /** @param {import('@playwright/test').Page} page */
 async function waitForLoginOrAppSignal(page) {
   await Promise.race([
-    page.locator('input').first().waitFor({ state: 'visible', timeout: 30000 }),
-    page.locator('.sidebar, nav.navbar, a[href*="#/home"]').first().waitFor({ state: 'visible', timeout: 30000 }),
+    usernameField(page).waitFor({ state: 'visible', timeout: 30000 }),
+    appShell(page).waitFor({ state: 'visible', timeout: 30000 }),
   ]).catch(() => {});
 }
 
@@ -229,18 +241,13 @@ export async function loginToApp(page) {
     if (page.isClosed()) throw new Error('Login page was closed while waiting for the sign-in form.');
     await waitForLoginOrAppSignal(page);
 
-    // Check whether the user is already logged in and on the dashboard.
-    if (isLoggedIn()) {
+    // Check whether the user is already logged in (the app redirects away from sign-in).
+    if (isLoggedIn() || (await appShell(page).isVisible().catch(() => false))) {
       console.log('Already logged in - skip!');
       return;
     }
 
-    // Fill the email/username field. Some Angular builds expose it only as a generic textbox.
-    const emailInput = page
-      .locator('input[type="email"], input[formcontrolname*="email" i], input[placeholder*="email" i], input')
-      .or(page.getByRole('textbox', { name: /email|username/i }))
-      .or(page.getByRole('textbox'))
-      .first();
+    const emailInput = usernameField(page);
     const emailVisible = await emailInput.isVisible({ timeout: 20000 }).catch(() => false);
     if (!emailVisible) {
       if (isLoggedIn()) return;
@@ -293,9 +300,9 @@ export async function loginToApp(page) {
       return;
     }
 
+    // Fail, never skip: a skipped suite would make the nightly email report "All Passed".
     if (/check your username and password|invalid|incorrect|unauthori[sz]ed/i.test(loginAlertText)) {
-      test.skip(
-        true,
+      throw new Error(
         `Login rejected the configured shared account: ${loginAlertText}. Check TMDONE_EMAIL/TMDONE_PASSWORD or account state.`
       );
     }

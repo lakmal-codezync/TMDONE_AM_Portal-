@@ -136,10 +136,21 @@ test.describe('09-Order Management - Orders list (view-only)', () => {
 
     await clickWhenReady(page, page.locator('button[mattooltip="Search"]'));
     await waitForSpinners(page);
+    // Known product bug (verified 2026-10-12, independent of browser timezone):
+    // POST /api/order/getOrderList {"DateRange":"2026/10/02-2026/10/02"} returned
+    // order IHJ1CF with OrderDateTime "2026-10-03T00:02:19" - the range is applied
+    // in a different timezone (likely UTC) than the local OrderDateTime returned,
+    // so orders from just after midnight of the next day leak into the range.
     await expect.poll(async () => {
-      const dates = (await readRows(page)).map((row) => parseRowDate(row[COL.date]));
-      return dates.length > 0 && dates.every((d) => d >= startOfDay(from) && d <= endOfDay(to));
-    }, { message: 'Every order should fall inside the chosen range.', timeout: 60000 }).toBe(true);
+      const rows = await readRows(page);
+      return rows.length > 0 ? rows
+        .filter((row) => { const d = parseRowDate(row[COL.date]); return d < startOfDay(from) || d > endOfDay(to); })
+        .map((row) => `${row[COL.orderId]} ${row[COL.date]}`) : ['(no rows)'];
+    }, {
+      message: `Every order should fall inside ${formatDate(from)} - ${formatDate(to)}; listed orders outside the range ` +
+        '(the API applies the date range in a different timezone than the OrderDateTime it returns).',
+      timeout: 60000,
+    }).toEqual([]);
     const total = await getTotalResults(page);
     expect(total, 'A 10-day window should hold fewer orders than the 30-day default.').toBeLessThan(fullTotal);
     await expect(page.locator('tbody tr')).toHaveCount(Math.min(total, 50));

@@ -1,1002 +1,321 @@
 // @ts-check
 // ============================================================
 // TMDone Admin Console - Campaigns
-// 02.1 - Manage Promo Code
-// URL: #/home/campaigns
+// 02.1 - Campaign View -> Promo Code Management
+// URL: #/home/campaigns/promo-code?campaignId=...
+// ------------------------------------------------------------
+// Works only inside a campaign this file creates itself (unique run-stamped
+// name, Colombo zone, test stores). Every promo code gets a unique run-stamped
+// code and is deleted by its own test; afterAll deletes any leftover promo code
+// and then the campaign.
 // ============================================================
 
 import { test, expect } from '@playwright/test';
-import { loginToApp, goToPage } from '../helpers/loginHelper.js';
+import * as H from './helpers/campaignHelpers.js';
+import * as P from './helpers/promoHelpers.js';
 
-// ===================== DATE HELPERS =========================
-const pad = (/** @type {number} */ n) => String(n).padStart(2, '0');
-const today = new Date();
-const endDate = new Date(today);
-endDate.setMonth(endDate.getMonth() + 1);
-const START_DATE = `${pad(today.getMonth() + 1)}/${pad(today.getDate())}/${today.getFullYear()}`;
-const END_DATE = `${pad(endDate.getMonth() + 1)}/${pad(endDate.getDate())}/${endDate.getFullYear()}`;
+const RUN_STAMP = Date.now().toString().slice(-7);
+const CAMPAIGN_NAME = `Auto Campaign PC ${RUN_STAMP}`;
+// Promo codes are limited to 10 characters by the form: 4-letter prefix + 6 base-36 chars.
+const CODE_STAMP = Date.now().toString(36).slice(-6).toUpperCase();
+const START_DATE = new Date();
+const END_DATE = H.addDays(new Date(), 10);
+const LIST_API = P.PROMO_LIST_API;
+const SECTION = P.PROMO_SECTION;
+
+/** @type {string[]} */
+const createdCodes = [];
+
+const MAIN = {
+  code: `QPCT${CODE_STAMP}`,
+  discountType: 'Percentage',
+  value: '10',
+  max: '3',
+  description: `Percentage promo created by Playwright ${RUN_STAMP}`,
+};
+const EDITED_VALUE = '15';
+const EDITED_DESCRIPTION = `Percentage promo edited by Playwright ${RUN_STAMP}`;
+
+/**
+ * @typedef {{ id: string, title: string, code: string, discountType: 'Percentage' | 'Amount', value: string, max?: string,
+ *   description: string, toggles?: string[], expected: Record<string, unknown>, freeDeliveryColumn: 'True' | 'False',
+ *   manageStores?: 'view' | 'add' }} PromoVariant
+ */
+/** @type {PromoVariant[]} */
+const VARIANTS = [
+  { id: 'PC-08', title: 'amount promo code', code: `QAMT${CODE_STAMP}`, discountType: 'Amount', value: '2', description: 'Amount promo by Playwright', expected: { DiscountType: 'AMOUNT', DiscountValue: 2 }, freeDeliveryColumn: 'False' },
+  { id: 'PC-09', title: 'saveable wallet voucher promo code', code: `QVCH${CODE_STAMP}`, discountType: 'Percentage', value: '10', max: '3', description: 'Saveable voucher by Playwright', toggles: ['IsSaveableAsVoucher'], expected: { IsSaveableAsVoucher: true }, freeDeliveryColumn: 'False', manageStores: 'view' },
+  { id: 'PC-10', title: 'common campaign voucher promo code', code: `QCMN${CODE_STAMP}`, discountType: 'Percentage', value: '10', max: '3', description: 'Common voucher by Playwright', toggles: ['IsVoucherCampaign'], expected: { IsVoucherCampaign: true }, freeDeliveryColumn: 'False', manageStores: 'add' },
+  { id: 'PC-11', title: 'first-time-only promo code', code: `QFTO${CODE_STAMP}`, discountType: 'Percentage', value: '10', max: '3', description: 'First time only by Playwright', toggles: ['IsFirstTimeOnly'], expected: { IsFirstTimeOnly: true }, freeDeliveryColumn: 'False' },
+  { id: 'PC-12', title: 'free-delivery promo code', code: `QFDL${CODE_STAMP}`, discountType: 'Percentage', value: '10', max: '3', description: 'Free delivery promo by Playwright', toggles: ['IsFreeDelivery'], expected: { IsFreeDelivery: true }, freeDeliveryColumn: 'True' },
+  { id: 'PC-13', title: 'first-time-only free-delivery promo code', code: `QFTF${CODE_STAMP}`, discountType: 'Amount', value: '1', description: 'First time + free delivery by Playwright', toggles: ['IsFirstTimeOnly', 'IsFreeDelivery'], expected: { IsFirstTimeOnly: true, IsFreeDelivery: true }, freeDeliveryColumn: 'True' },
+];
+
+/** @param {import('@playwright/test').Page} page */
+async function openPromoPage(page) {
+  await H.gotoCampaignSection(page, CAMPAIGN_NAME, SECTION.section, SECTION.heading);
+  await expect(H.sectionHeading(page)).toHaveText(/Campaigns\s*-\s*Promo Code Management/);
+}
+
+/**
+ * Creates a promo code in the test campaign (dates of this file) and records it
+ * for the afterAll safety net.
+ * @param {import('@playwright/test').Page} page
+ * @param {{ code: string, discountType: string, value: string, max?: string, description: string, toggles?: string[] }} spec
+ */
+function createPromo(page, spec) {
+  return P.createPromo(page, { ...spec, start: START_DATE, end: END_DATE, created: createdCodes });
+}
+
+/**
+ * @param {import('@playwright/test').Page} page
+ * @param {string} code
+ */
+function deletePromo(page, code) {
+  return P.deletePromo(page, code, createdCodes);
+}
+
+const findPromoRow = P.findPromoRow;
+const slideToggle = P.slideToggle;
+const [FOOD_HOUSE, CAFE_ASIANA] = H.TEST_STORES;
+
+/**
+ * Opens "Manage Stores" of a voucher promo code (only voucher codes have stores):
+ * it shows the stores picked at creation (Food House). With mode 'view' the
+ * dialog is closed without saving; with 'add' Cafe Asiana is added and saved,
+ * and re-opening the dialog shows both test stores assigned.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} code
+ * @param {'view' | 'add'} mode
+ */
+async function managePromoStores(page, code, mode) {
+  /** @type {string[]} */
+  const saves = [];
+  const listener = (/** @type {import('@playwright/test').Request} */ r) => { if (/api\/promocode\/setPromoCodeStores/.test(r.url())) saves.push(r.url()); };
+  page.on('request', listener);
+  const open = async () => {
+    const panel = await H.openRowMenu(page, await findPromoRow(page, code));
+    const stores = H.waitForApi(page, /api\/promocode\/getUnassignedStores/);
+    await H.clickMenuItem(page, panel, 'Manage Stores');
+    const json = await (await stores).json();
+    const dialog = H.campaignDialog(page).filter({ hasText: 'Manage Promo Code Stores' });
+    await expect(dialog).toBeVisible({ timeout: 20000 });
+    const offered = json.All.map((/** @type {{Name: string}} */ s) => s.Name);
+    // Only campaign stores can be offered. (Once, under parallel load, the lookup
+    // briefly left Cafe Asiana out; the add path below requires it explicitly.)
+    for (const name of offered) expect(H.TEST_STORES, `"${name}" is a campaign store`).toContain(name);
+    expect(offered, 'the store picked at creation is offered').toContain(FOOD_HOUSE);
+    return { dialog, offered, assigned: json.Assigned.map((/** @type {{Name: string}} */ s) => s.Name).sort() };
+  };
+  let { dialog, offered, assigned } = await open();
+  expect(assigned, 'the store picked at creation is assigned').toEqual([FOOD_HOUSE]);
+  const lists = dialog.locator('dual-list .listbox');
+  await expect(lists.nth(1).locator('li').filter({ hasText: H.exactText(FOOD_HOUSE) })).toHaveCount(1, { timeout: 20000 });
+  await expect(lists.nth(1).locator('li')).toHaveCount(1);
+  if (mode === 'view') {
+    await H.closeDialogWithX(page, dialog);
+    page.off('request', listener);
+    expect(saves, 'closing Manage Stores must not save').toHaveLength(0);
+    return;
+  }
+  page.off('request', listener);
+  expect(offered, `${CAFE_ASIANA} must be offered to add it`).toContain(CAFE_ASIANA);
+  await expect(lists.nth(0).locator('li').filter({ hasText: H.exactText(CAFE_ASIANA) })).toHaveCount(1);
+  await H.addToDualList(page, dialog, [CAFE_ASIANA]);
+  const save = H.waitForApi(page, /api\/promocode\/setPromoCodeStores/);
+  await H.realClick(page, dialog.getByRole('button', { name: /^\s*Save\s*$/ }));
+  const response = await save;
+  expect(await response.text()).toContain('SUCCESS');
+  const body = JSON.parse(response.request().postData() || '{}');
+  expect(body.SelectedStoreInfos.map((/** @type {{Name: string}} */ s) => s.Name).sort()).toEqual([...H.TEST_STORES].sort());
+  await expect(dialog).toBeHidden({ timeout: 20000 });
+  ({ dialog, offered, assigned } = await open());
+  expect(assigned, 'both test stores are assigned after saving').toEqual([...H.TEST_STORES].sort());
+  await H.closeDialogWithX(page, dialog);
+}
 
 test.describe.serial('02.1 - Promo Code', () => {
+  test.beforeAll(async ({ browser }) => {
+    test.setTimeout(300000);
+    await H.createCampaignInFreshPage(browser, CAMPAIGN_NAME);
+  });
 
-  /**
-   * Reusable helper to handle optional store selection if a store picker or selector appears.
-   * If not visible or if any interaction fails, it continues gracefully without failing.
-   * @param {import('@playwright/test').Page} page
-   */
-  async function handleOptionalStoreSelection(page) {
-    try {
-      console.log('ℹ️ Checking for optional store selection modal/step...');
-      await page.waitForTimeout(1000);
-
-      const recordPicker = page.locator('.record-picker, app-record-picker, modal-container:has-text("Store"), .listbox').first();
-      const selectAllUnselectedBtn = page.locator('button.pull-left:has-text("All"), button:has-text("All")').first();
-
-      const isStoreSelectionVisible = await recordPicker.isVisible().catch(() => false) ||
-                                     await selectAllUnselectedBtn.isVisible().catch(() => false) || 
-                                     await page.locator('mat-checkbox').filter({ hasText: /Select All/i }).first().isVisible().catch(() => false) ||
-                                     await page.locator('th mat-checkbox, thead mat-checkbox, .select-all mat-checkbox').first().isVisible().catch(() => false);
-
-      if (isStoreSelectionVisible) {
-        console.log('✅ Store selection view detected. Attempting to select all stores...');
-
-        // First, check if there is a record picker with hidden 'All' buttons
-        const hasRecordPicker = await page.evaluate(() => {
-          const picker = document.querySelector('.record-picker, app-record-picker, .listbox');
-          return !!picker;
-        });
-
-        if (hasRecordPicker) {
-          console.log('ℹ️ Record picker detected. Attempting to select All and Add...');
-          try {
-              const allBtn = page.locator('button.pull-left:has-text("All"), button:has-text("All"), .record-picker button.pull-left, button:has-text("Select All")').first();
-              await allBtn.waitFor({ state: 'attached', timeout: 2000 });
-              await allBtn.evaluate((/** @type {HTMLElement} */ node) => {
-                  node.style.display = 'block';
-                  node.style.visibility = 'visible';
-                  node.style.opacity = '1';
-                  node.click();
-              });
-              console.log('✅ Clicked Unselected All button');
-          } catch(e) {
-              // @ts-ignore
-              console.log('⚠️ Could not click All button: ' + e.message);
-          }
-          await page.waitForTimeout(500);
-
-          try {
-              const addBtn = page.locator('button[name="addBtn"], button:has-text("Add"), .point-right, button:has(mat-icon:has-text("chevron_right")), button:has(i[class*="right"])').first();
-              await addBtn.waitFor({ state: 'attached', timeout: 2000 });
-              await addBtn.evaluate((/** @type {HTMLElement} */ node) => {
-                  node.style.display = 'block';
-                  node.style.visibility = 'visible';
-                  node.style.opacity = '1';
-                  node.click();
-              });
-              console.log('✅ Clicked Add button');
-          } catch(e) {
-              // @ts-ignore
-              console.log('⚠️ Could not click Add button: ' + e.message);
-          }
-          await page.waitForTimeout(1000);
-        } else {
-          // Fallback to standard checkbox selection
-          const selectAllCb = page.locator('mat-checkbox').filter({ hasText: /Select All/i }).first();
-          const headerCb = page.locator('th mat-checkbox, thead mat-checkbox, .select-all mat-checkbox').first();
-          if (await selectAllCb.isVisible().catch(() => false)) {
-            const classList = (await selectAllCb.getAttribute('class').catch(() => '')) || '';
-            const ariaChecked = await selectAllCb.getAttribute('aria-checked').catch(() => null);
-            if (!classList.includes('mat-checkbox-checked') && ariaChecked !== 'true') {
-              await selectAllCb.click({ force: true }).catch(() => {});
-            }
-          } else if (await headerCb.isVisible().catch(() => false)) {
-            const classList = (await headerCb.getAttribute('class').catch(() => '')) || '';
-            const ariaChecked = await headerCb.getAttribute('aria-checked').catch(() => null);
-            if (!classList.includes('mat-checkbox-checked') && ariaChecked !== 'true') {
-              await headerCb.click({ force: true }).catch(() => {});
-            }
-          }
-        }
-        await page.waitForTimeout(1000);
-
-        // Click the final confirmation button if still inside the store selection modal/view
-        const finalConfirmBtn = page.locator('modal-container button:has-text("Create"), modal-container button:has-text("Save"), modal-container button:has-text("Submit"), modal-container button.mat-primary, button:has-text("Create and set Stores")').last();
-        if (await finalConfirmBtn.isVisible().catch(() => false) && await finalConfirmBtn.isEnabled().catch(() => false)) {
-          await finalConfirmBtn.click({ force: true }).catch(() => {});
-          await page.waitForTimeout(2000);
-        }
-        console.log('✅ Optional store selection completed.');
-      } else {
-        console.log('ℹ️ No store selection view detected. Skipping.');
-      }
-    } catch (err) {
-      console.log('⚠️ Error handled during optional store selection (test will not fail):', err);
-    }
-  }
+  test.afterAll(async ({ browser }) => {
+    test.setTimeout(600000);
+    await H.deleteSectionRowsIfPresent(browser, CAMPAIGN_NAME, SECTION, [...createdCodes]);
+    await H.deleteCampaignIfPresent(browser, CAMPAIGN_NAME);
+  });
 
   test.beforeEach(async ({ page }) => {
-    // If we are already logged in and on the campaigns list page, skip redundant navigation
-    const searchInput = page.locator('input[matinput], input.mat-input-element, input[placeholder*="Search" i]').first();
-    if (page.url().includes('campaigns') && await searchInput.isVisible().catch(() => false)) {
-      console.log('ℹ️ Already on campaigns page, skipping beforeEach navigation.');
-      return;
-    }
-
-    await loginToApp(page);
-    await goToPage(page, '#/home/campaigns');
+    test.setTimeout(300000);
+    await openPromoPage(page);
   });
 
-  // ============================================================
-  // Reusable helper function to run CRUD operations on a Promo Code
-  // ============================================================
-  /**
-   * @param {import('@playwright/test').Page} page
-   * @param {string} promoCode
-   */
-  async function runPromoCodeCRUD(page, promoCode) {
-    if (!promoCode) {
-      console.log('⚠️ No promo code generated, skipping CRUD.');
-      return;
+  test('PC-00: Promo Code Management page shows toolbar, filters and an empty table for a new campaign', async ({ page }) => {
+    await expect(page.getByRole('button', { name: 'Create Promo', exact: true })).toBeVisible();
+    await expect(H.sectionSearchInput(page)).toBeVisible();
+    await expect(page.locator('mat-form-field').filter({ hasText: 'Search By' }).locator('mat-select')).toContainText('Code');
+    await expect(page.locator('button[mattooltip="Search"]')).toBeVisible();
+    await expect(page.locator('button[mattooltip="Clear"]')).toBeVisible();
+    await expect(page.locator('span[mattooltip="Analytics"]')).toBeVisible();
+    await expect(page.locator('thead th')).toHaveText(['Code', 'Start Date', 'End Date', 'Discount Type', 'Is Free Delivery', 'Status', 'Actions'].map((t) => H.exactText(t)));
+    await expect(page.locator('tbody tr')).toHaveCount(0);
+    await expect(page.getByText('Total 0 results found')).toBeVisible();
+
+    // Discount Type filter offers exactly Percentage / Amount.
+    const discountFilter = page.locator('mat-form-field').filter({ hasText: 'Discount Type' }).locator('mat-select');
+    await H.realClick(page, discountFilter);
+    const panel = page.locator('.mat-select-panel').filter({ visible: true }).last();
+    await expect(panel.locator('mat-option')).toHaveText([/Percentage/, /Amount/]);
+    await page.locator('.cdk-overlay-backdrop').last().click({ position: { x: 3, y: 3 } });
+    await expect(panel).toBeHidden();
+
+    // Back arrow returns to the campaign view.
+    await H.realClick(page, page.locator('mat-icon').filter({ hasText: /^\s*arrow_back_ios\s*$/ }).first());
+    await expect(H.campaignViewHeader(page, CAMPAIGN_NAME)).toBeVisible({ timeout: 30000 });
+  });
+
+  test('PC-01: Create Promo dialog validates required fields and closes without saving', async ({ page }) => {
+    const addCalls = [];
+    page.on('request', (r) => { if (/api\/promocode\/add/.test(r.url())) addCalls.push(r.url()); });
+    const dialog = await H.openSectionCreateDialog(page, 'Create Promo', /Create Promo Code/);
+    const create = dialog.getByRole('button', { name: /^\s*Create\s*$/ });
+    await expect(create).toBeDisabled();
+    for (const fc of ['Code', 'StartDate', 'EndDate', 'DiscountValue', 'MaxCount', 'MaxCountPerUser', 'MaxOrderCount', 'MinOrderCount', 'MaxOrderValue', 'MinOrderValue']) {
+      await expect(dialog.locator(`input[formcontrolname="${fc}"]`), `${fc} field`).toBeVisible();
     }
-    console.log(`🔄 Starting CRUD workflow for Promo Code: ${promoCode}`);
-
-    // Give it a moment to render the table list
-    await page.waitForTimeout(500);
-
-    // Helper to open action menu for the specific row with retry logic for detached nodes
-    const openRowMenu = async () => {
-      let row = page.locator('mat-row, tbody tr, tr').filter({ hasText: promoCode }).first();
-      await row.waitFor({ state: 'visible', timeout: 8000 });
-      
-      const actionBtn = row.locator('.mat-menu-trigger, button[mat-icon-button], i.mar-icon-more-h, i.mar-icon-more-v, button:has(mat-icon:has-text("more_horiz")), button:has(mat-icon:has-text("more_vert"))').first();
-      await actionBtn.scrollIntoViewIfNeeded().catch(() => {});
-      
-      try {
-        await actionBtn.click({ force: true });
-      } catch (err) {
-        console.log('⚠️ Detached row action button detected, retrying after DOM stabilization...');
-        await page.waitForTimeout(1000);
-        row = page.locator('mat-row, tbody tr, tr').filter({ hasText: promoCode }).first();
-        const actionBtnRetry = row.locator('.mat-menu-trigger, button[mat-icon-button], i.mar-icon-more-h, i.mar-icon-more-v, button:has(mat-icon:has-text("more_horiz")), button:has(mat-icon:has-text("more_vert"))').first();
-        await actionBtnRetry.click({ force: true });
-      }
-      await page.waitForTimeout(500);
-    };
-
-    // ==================== 1. ANALYTICS ====================
-    console.log(`📊 Step 1: View Analytics for ${promoCode}`);
-    await openRowMenu();
-
-    const analyticsBtn = page.locator('[role="menuitem"]:has(mat-icon:has-text("analytics")), [role="menuitem"]:has-text("Analytics"), button:has-text("Analytics")').first();
-    
-    try {
-      await analyticsBtn.waitFor({ state: 'visible', timeout: 5000 });
-      await analyticsBtn.click({ force: true });
-      
-      // Wait for the analytics page change transition
-      await page.waitForTimeout(1000);
-      console.log('✅ Analytics tab loaded. Scrolling to bottom...');
-
-      // Smooth scroll down to the bottom of the page
-      await page.evaluate(() => {
-        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-        const scrollable = document.querySelector('mat-sidenav-content, .content, .main-content, div[style*="overflow-y"]');
-        if (scrollable) scrollable.scrollTo({ top: scrollable.scrollHeight, behavior: 'smooth' });
-      });
-      await page.waitForTimeout(1200);
-      console.log('✅ Scrolled to bottom. Scrolling back to top...');
-
-      // Smooth scroll back to the top
-      await page.evaluate(() => {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-        const scrollable = document.querySelector('mat-sidenav-content, .content, .main-content, div[style*="overflow-y"]');
-        if (scrollable) scrollable.scrollTo({ top: 0, behavior: 'smooth' });
-      });
-      await page.waitForTimeout(1200);
-      console.log('✅ Scrolled back to top. Clicking the back button next to "Campaigns - Promo Code Management"...');
-
-      // Switch back to list view by clicking the top-left back button next to the header
-      const backBtn = page.locator(
-        'mat-icon.back-bt, ' +
-        '.back-bt, ' +
-        'mat-icon:has-text("arrow_back_ios"), ' +
-        'button:has(mat-icon:has-text("arrow_back")), ' +
-        'button:has(mat-icon:has-text("keyboard_arrow_left"))'
-      ).first();
-
-      if (await backBtn.isVisible().catch(() => false)) {
-        await backBtn.click({ force: true });
-        await page.waitForTimeout(800);
-      }
-
-      // Since clicking the back button might return to either the Promo Code list page or the Campaign View page:
-      console.log('ℹ️ Checking current page state...');
-      const promoTableCheck = page.locator('mat-table, table, tbody tr').first();
-      const isTableVisible = await promoTableCheck.isVisible().catch(() => false);
-      
-      if (!isTableVisible) {
-        console.log('ℹ️ Promo table not visible. We are likely on the Campaign View page. Re-entering Promo Code section...');
-        const viewPromoCount = page.locator('div.plain-card:has(h5:has-text("Promo Code")), .card:has-text("Promo Code")').first();
-        await viewPromoCount.waitFor({ state: 'visible', timeout: 8000 });
-        await viewPromoCount.click();
-        await page.waitForTimeout(1000);
-      } else {
-        console.log('✅ Promo table is already visible. Skipping re-entering card.');
-      }
-
-      // Wait for the table/list of promo codes to be visible again before proceeding
-      const promoTable = page.locator('mat-table, table, tbody tr').first();
-      await promoTable.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
-      await page.waitForTimeout(500);
-    } catch (err) {
-      console.log('⚠️ Analytics button not visible. Skipping analytics step.');
-      await page.keyboard.press('Escape'); // Close the menu
-      await page.waitForTimeout(500);
+    for (const fc of ['IsFirstTimeOnly', 'IsFreeDelivery', 'IsSaveableAsVoucher', 'IsVoucherCampaign']) {
+      await expect(slideToggle(dialog, fc), `${fc} toggle`).toBeVisible();
+      await expect(slideToggle(dialog, fc)).not.toHaveClass(/mat-checked/);
     }
+    await expect(dialog.locator('mat-select[formcontrolname="OperationalDay"]')).toContainText('All Days');
+    // Percentage makes Discount Max Amount required.
+    await H.chooseMatOption(page, dialog.locator('mat-select[formcontrolname="DiscountType"]'), 'Percentage');
+    await expect(dialog.locator('input[formcontrolname="DiscountMaxAmount"]')).toBeVisible();
+    await expect(dialog.getByText('Discount Max Amount Required')).toBeVisible();
+    await dialog.locator('input[formcontrolname="Code"]').fill(`QPCV${CODE_STAMP}`);
+    await expect(create, 'Create stays disabled without dates / values').toBeDisabled();
+    await H.closeDialogWithX(page, dialog);
+    expect(addCalls, 'Closing the dialog must not create a promo code').toHaveLength(0);
+    await expect(page.locator('tbody tr')).toHaveCount(0);
+  });
 
-    // ==================== 2. EDIT ====================
-    console.log(`✏️ Step 2: Edit Promo Code ${promoCode}`);
-    await openRowMenu();
+  test('PC-02: Create a percentage promo code', async ({ page }) => {
+    const body = await createPromo(page, MAIN);
+    expect(body.DiscountMaxAmount).toBe(Number(MAIN.max));
+    expect(body.IsFreeDelivery).toBe(false);
+    expect(body.IsFirstTimeOnly).toBe(false);
+    const row = await findPromoRow(page, MAIN.code);
+    await expect(row.locator('td')).toHaveText([MAIN.code, H.formatDDMMYYYY(START_DATE), H.formatDDMMYYYY(END_DATE), 'Percentage', 'False', 'ACTIVE', /more_horiz/].map((t) => (typeof t === 'string' ? H.exactText(t) : t)));
+  });
 
-    const editBtn = page.locator('[role="menuitem"]:has(mat-icon:has-text("edit_note")), [role="menuitem"]:has-text("Edit"), button:has-text("Edit")').first();
-    try {
-      await editBtn.waitFor({ state: 'visible', timeout: 5000 });
-      await editBtn.click({ force: true });
-      await page.waitForTimeout(800);
+  test('PC-03: Search, Discount Type filter and Clear work on the created promo code', async ({ page }) => {
+    await findPromoRow(page, MAIN.code);
+    const discountFilter = page.locator('mat-form-field').filter({ hasText: 'Discount Type' }).locator('mat-select');
+    let response = H.waitForApi(page, LIST_API, { body: (b) => b.includes('"DiscountType":"AMOUNT"') });
+    await H.chooseMatOption(page, discountFilter, 'Amount');
+    let json = await (await response).json();
+    expect(json.Items, 'Amount filter must exclude the percentage promo').toHaveLength(0);
+    await expect(H.sectionRow(page, MAIN.code)).toHaveCount(0);
+    response = H.waitForApi(page, LIST_API, { body: (b) => b.includes('"DiscountType":"PERCENTAGE"') });
+    await H.chooseMatOption(page, discountFilter, 'Percentage');
+    json = await (await response).json();
+    expect(json.Items.map((/** @type {{Code: string}} */ p) => p.Code)).toEqual([MAIN.code]);
+    await expect(H.sectionRow(page, MAIN.code)).toHaveCount(1);
+    json = await H.clearSectionFilters(page, LIST_API);
+    await expect(H.sectionSearchInput(page)).toHaveValue('');
+    expect(json.Items.some((/** @type {{Code: string}} */ p) => p.Code === MAIN.code)).toBe(true);
+  });
 
-      const editDialog = page.locator('modal-container, mat-dialog-container, [role="dialog"]').first();
-      if (await editDialog.isVisible().catch(() => false)) {
-        console.log('✅ Edit Promo Code modal displayed.');
-
-        const descField = editDialog.locator('textarea[formControlName="Description"], textarea').first();
-        if (await descField.isVisible().catch(() => false)) {
-          await descField.clear();
-          await descField.fill(`Updated Promo description for ${promoCode} by Playwright.`);
-          console.log('✅ Description field updated.');
-          await descField.dispatchEvent('input').catch(() => {});
-        }
-
-        const updateBtn = editDialog.locator('button:has-text("Update"), button:has-text("Save"), button.mat-primary').first();
-        if (await updateBtn.isVisible().catch(() => false)) {
-          if (await updateBtn.isEnabled().catch(() => false)) {
-            await updateBtn.click();
-            await page.waitForTimeout(2000);
-
-            // Optional Store Selection check (Step 1)
-            await handleOptionalStoreSelection(page);
-
-            // Dismiss SweetAlert
-            const swalBtn = page.locator('.swal2-confirm, button:has-text("OK")').filter({ visible: true }).first();
-            await swalBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
-            if (await swalBtn.isVisible().catch(() => false)) {
-              await swalBtn.click({ force: true });
-              console.log('✅ Edit changes saved successfully.');
-              await page.waitForTimeout(1500);
-            }
-
-            // Optional Store Selection check (Step 2)
-            await handleOptionalStoreSelection(page);
-          } else {
-            console.log('⚠️ Update button is disabled. Closing modal...');
-            await page.keyboard.press('Escape');
-          }
-        }
-      }
-      
-      // Safety check: if the modal is still open for any reason, force close it so it doesn't block the next step
-      if (await editDialog.isVisible().catch(() => false)) {
-          console.log('⚠️ Edit modal is still open after Update attempt. Forcing close.');
-          await page.keyboard.press('Escape');
-          await page.waitForTimeout(500);
-      }
-      await page.waitForTimeout(500);
-    } catch (e) {
-      console.log('⚠️ Edit button not visible or error occurred. Skipping edit.');
-      await page.keyboard.press('Escape');
+  test('PC-04: Row menu offers Analytics / Edit / Delete and Analytics opens the promo order summary', async ({ page }) => {
+    const row = await findPromoRow(page, MAIN.code);
+    const panel = await H.openRowMenu(page, row);
+    expect(await H.menuLabels(panel)).toEqual(['Analytics', 'Edit', 'Delete']);
+    const lookup = H.waitForApi(page, /api\/campaign\/getCampaignTypeLookup/, { body: (b) => b.includes('"Type":"PROMO"') });
+    await H.clickMenuItem(page, panel, 'Analytics');
+    const items = await (await lookup).json();
+    expect(items.map((/** @type {{Name: string}} */ i) => i.Name)).toContain(MAIN.code);
+    await expect(page.getByText('Promo - Order Summary')).toBeVisible({ timeout: 30000 });
+    for (const metric of ['Total Orders Count', 'Total Discount', "How much you've got (GMV)", 'Customers Count']) {
+      await expect(page.getByText(metric, { exact: true }).first(), metric).toBeVisible();
     }
+    await expect(page.locator('button[mattooltip="Order List"]')).toBeVisible();
+  });
 
-    // ==================== 3. DELETE ====================
-    console.log(`🗑️ Step 3: Delete Promo Code ${promoCode}`);
-    await openRowMenu();
+  test('PC-05: Grid view shows the promo code as a card and the table view comes back', async ({ page }) => {
+    await findPromoRow(page, MAIN.code);
+    await H.realClick(page, page.locator('span[mattooltip="List View"]').first());
+    await expect(page.locator('tbody tr')).toHaveCount(0, { timeout: 15000 });
+    const card = page.locator('.card, mat-card, div').filter({ has: page.getByText(MAIN.code, { exact: true }) }).filter({ hasText: 'DISCOUNT TYPE' }).last();
+    await expect(card).toBeVisible({ timeout: 15000 });
+    await expect(card).toContainText('ACTIVE');
+    await expect(card).toContainText(`${H.formatDDMMYYYY(START_DATE)} - ${H.formatDDMMYYYY(END_DATE)}`);
+    await expect(card).toContainText(/Percentage/);
+    await expect(card).toContainText(/IS FREE DELIVERY\s*False/i);
+    // ... and the Grid View toggle brings the table back.
+    await H.realClick(page, page.locator('span[mattooltip="Grid View"]').first());
+    await expect(H.sectionRow(page, MAIN.code)).toHaveCount(1, { timeout: 15000 });
+  });
 
-    const deleteBtn = page.locator('[role="menuitem"]:has(mat-icon:has-text("delete_sweep")), [role="menuitem"]:has-text("Delete"), button:has-text("Delete")').first();
-    try {
-      await deleteBtn.waitFor({ state: 'visible', timeout: 5000 });
-      await deleteBtn.click({ force: true });
-      await page.waitForTimeout(1000);
+  test('PC-06: Edit the promo code (description and discount value)', async ({ page }) => {
+    const row = await findPromoRow(page, MAIN.code);
+    const panel = await H.openRowMenu(page, row);
+    await H.clickMenuItem(page, panel, 'Edit');
+    const dialog = H.campaignDialog(page).filter({ hasText: 'Edit Promo Code' });
+    await expect(dialog).toBeVisible({ timeout: 20000 });
+    await expect(dialog.locator('input[formcontrolname="Code"]')).toHaveValue(MAIN.code);
+    await expect(dialog.locator('mat-select[formcontrolname="DiscountType"]')).toContainText('Percentage');
+    await expect(dialog.locator('input[formcontrolname="StartDate"]')).toHaveValue(H.formatDDMMYYYY(START_DATE));
+    await expect(dialog.locator('input[formcontrolname="EndDate"]')).toHaveValue(H.formatDDMMYYYY(END_DATE));
+    await expect(dialog.locator('input[formcontrolname="DiscountValue"]')).toHaveValue(MAIN.value);
+    await expect(dialog.locator('input[formcontrolname="DiscountMaxAmount"]')).toHaveValue(MAIN.max);
+    await expect(dialog.locator('textarea[formcontrolname="Description"]')).toHaveValue(MAIN.description);
 
-      // Confirm inside SweetAlert popup
-      const confirmSwal = page.locator('.swal2-popup').filter({ visible: true }).first();
-      await confirmSwal.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
-      if (await confirmSwal.isVisible().catch(() => false)) {
-        const yesBtn = confirmSwal.locator('button.swal2-confirm, button:has-text("Yes"), button:has-text("Confirm")').filter({ visible: true }).first();
-        await yesBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
-        await yesBtn.click({ force: true });
-        await page.waitForTimeout(1500);
+    await dialog.locator('input[formcontrolname="DiscountValue"]').fill(EDITED_VALUE);
+    await dialog.locator('textarea[formcontrolname="Description"]').fill(EDITED_DESCRIPTION);
+    const update = H.waitForApi(page, /api\/promocode\/update/);
+    await H.realClick(page, dialog.getByRole('button', { name: /^\s*Update\s*$/ }));
+    const response = await update;
+    const text = await response.text();
+    expect(response.status(), `promocode/update failed: ${text}`).toBe(200);
+    expect(text).toContain('SUCCESS');
+    const body = JSON.parse(response.request().postData() || '{}');
+    expect(body.Code).toBe(MAIN.code);
+    expect(body.DiscountValue).toBe(Number(EDITED_VALUE));
+    expect(body.Description).toBe(EDITED_DESCRIPTION);
+    await expect(dialog).toBeHidden({ timeout: 20000 });
 
-        // Dismiss post-delete SweetAlert
-        const okBtn = page.locator('.swal2-confirm, button:has-text("OK")').filter({ visible: true }).first();
-        await okBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
-        if (await okBtn.isVisible().catch(() => false)) {
-          await okBtn.click({ force: true });
-          console.log('✅ Promo Code deleted successfully.');
-        }
+    // Re-open the edit dialog: the saved values are shown, then close without saving.
+    const again = await H.openRowMenu(page, await findPromoRow(page, MAIN.code));
+    await H.clickMenuItem(page, again, 'Edit');
+    await expect(dialog).toBeVisible({ timeout: 20000 });
+    await expect(dialog.locator('input[formcontrolname="DiscountValue"]')).toHaveValue(EDITED_VALUE);
+    await expect(dialog.locator('textarea[formcontrolname="Description"]')).toHaveValue(EDITED_DESCRIPTION);
+    await H.closeDialogWithX(page, dialog);
+  });
+
+  test('PC-07: Delete the percentage promo code (cancel first, then confirm)', async ({ page }) => {
+    const row = await findPromoRow(page, MAIN.code);
+    await H.cancelSectionRowDelete(page, row, SECTION.deleteApi);
+    await deletePromo(page, MAIN.code);
+  });
+
+  for (const variant of VARIANTS) {
+    test(`${variant.id}: Create, verify${variant.manageStores ? ` (${variant.manageStores === 'add' ? 'add a store via' : 'open'} Manage Stores)` : ''} and delete a ${variant.title}`, async ({ page }) => {
+      const body = await createPromo(page, variant);
+      for (const [key, value] of Object.entries(variant.expected)) {
+        expect(body[key], `${key} in promocode/add payload`).toBe(value);
       }
-    } catch(e) {
-      console.log('⚠️ Delete button not visible. Skipping delete.');
-      await page.keyboard.press('Escape');
-    }
-    await page.waitForTimeout(500);
+      const row = await findPromoRow(page, variant.code);
+      await expect(row.locator('td').nth(3)).toHaveText(variant.discountType);
+      await expect(row.locator('td').nth(4)).toHaveText(variant.freeDeliveryColumn);
+      await expect(row.locator('td').nth(5)).toHaveText('ACTIVE');
+      const panel = await H.openRowMenu(page, row);
+      const voucher = (variant.toggles || []).some((t) => /Voucher/.test(t));
+      expect(await H.menuLabels(panel)).toEqual(voucher ? ['Analytics', 'Manage Stores', 'Edit', 'Delete'] : ['Analytics', 'Edit', 'Delete']);
+      await H.closeMenu(page);
+      if (variant.manageStores) await managePromoStores(page, variant.code, variant.manageStores);
+      await deletePromo(page, variant.code);
+    });
   }
-
-  // ============================================================
-  // Reusable helper function to create a Promo Code
-  // ============================================================
-  /**
-   * @param {import('@playwright/test').Page} page
-   * @param {object} config
-   * @param {string} config.prefix
-   * @param {string} config.discountType
-   * @param {string} config.discountValue
-   * @param {string} [config.discountMaxAmount]
-   * @param {boolean} [config.isSaveableAsVoucher]
-   * @param {boolean} [config.isVoucherCampaign]
-   * @param {string} [config.title]
-   * @param {string} [config.titleArabic]
-   * @param {string} [config.subTitle]
-   * @param {string} [config.subTitleArabic]
-   * @param {string} config.description
-   * @param {string} config.descriptionArabic
-   * @returns {Promise<string>}
-   */
-  async function createPromoCode(page, config) {
-    console.log(`🎟️ Creating Promo Code for Campaign (${config.prefix})`);
-
-    // 1. Navigate to Manage Campaign page first
-    await page.waitForTimeout(1000);
-    const searchInput = page.locator('input[matinput], input.mat-input-element, input[placeholder*="Search" i]').first();
-    await searchInput.waitFor({ state: 'visible' });
-    await searchInput.clear();
-    await searchInput.fill('Auto Campaign');
-    await page.waitForTimeout(3000);
-
-    let firstRowData = page.locator('mat-row, tbody tr').first();
-    const isRowVisible = await firstRowData.isVisible().catch(() => false);
-    if (!isRowVisible) {
-      console.log('⚠️ Campaign "Auto Campaign" not found. Clearing search to pick first available campaign...');
-      await searchInput.clear();
-      await page.waitForTimeout(2000);
-      firstRowData = page.locator('mat-row, tbody tr').first();
-    }
-    await firstRowData.waitFor({ state: 'visible', timeout: 5000 }).catch(() => { });
-
-    // 2. Open Campaign View
-    console.log('ℹ️ Entering View mode to access Promo Codes...');
-    const actionBtn = firstRowData.locator('.mat-menu-trigger, i.mar-icon-more-h, i.mar-icon-more-v, button[mat-icon-button]').first();
-    if (await actionBtn.isVisible().catch(() => false)) await actionBtn.click();
-    await page.waitForTimeout(1000);
-
-    const viewBtn = page.locator('button.mat-menu-item:has-text("View"), [role="menuitem"]:has-text("View")').first();
-    await viewBtn.click();
-    await page.waitForTimeout(4000);
-
-    // 3. Click on Promo Code Count Card in View Page
-    console.log('ℹ️ Looking for Promo Code count card in View page...');
-    const viewPromoCount = page.locator('div.plain-card:has(h5:has-text("Promo Code")), .card:has-text("Promo Code")').first();
-    await viewPromoCount.click();
-    await page.waitForTimeout(3000);
-    console.log('✅ Clicked Promo section inside View page.');
-
-    // 4. Click Create Promo Button
-    const addPromoBtn = page.locator('button.create-button:has-text("Create Promo"), button:has-text("Create Promo")').first();
-    if (await addPromoBtn.isVisible().catch(() => false)) {
-      await addPromoBtn.click();
-      await page.waitForTimeout(2000);
-      console.log('✅ Clicked Create Promo button.');
-    }
-
-    // 5. Fill Promo Code Form using exact Angular selectors
-    const dialog = page.locator('modal-container, mat-dialog-container, [role="dialog"]').first();
-    const isDialogVisible = await dialog.isVisible().catch(() => false);
-    const formContext = isDialogVisible ? dialog : page;
-
-    // Code
-    let generatedCode = '';
-    const promoCodeInput = formContext.locator('input[formControlName="Code"]').first();
-    if (await promoCodeInput.isVisible().catch(() => false)) {
-      generatedCode = `${config.prefix}${Date.now().toString().slice(-4)}${Math.floor(100 + Math.random() * 900)}`;
-      await promoCodeInput.fill(generatedCode);
-      console.log(`✅ Filled Promo Code: ${generatedCode}`);
-    }
-
-    // Discount Type
-    const discountTypeSelect = formContext.locator('mat-select[formControlName="DiscountType"]').first();
-    if (await discountTypeSelect.isVisible().catch(() => false)) {
-      await discountTypeSelect.click();
-      await page.waitForTimeout(1000);
-      const opt = page.locator(`mat-option:has-text("${config.discountType}")`).first();
-      if (await opt.isVisible().catch(() => false)) {
-        await opt.click();
-        console.log(`✅ Selected Discount Type: ${config.discountType}`);
-      } else {
-        // Fallback for Amount
-        if (config.discountType === 'Amount') {
-          const amountOpt = page.locator('mat-option:has-text("Amount"), mat-option:has-text("Flat Amount"), mat-option:has-text("Value")').first();
-          if (await amountOpt.isVisible().catch(() => false)) {
-            await amountOpt.click();
-          } else {
-            await page.locator('mat-option').nth(1).click().catch(() => page.keyboard.press('Escape'));
-          }
-        } else {
-          await page.locator('mat-option').first().click().catch(() => page.keyboard.press('Escape'));
-        }
-      }
-      await page.waitForTimeout(1000);
-    }
-
-    // Discount Value
-    const discountInput = formContext.locator('input[formControlName="DiscountValue"]').first();
-    if (await discountInput.isVisible().catch(() => false)) {
-      await discountInput.fill(config.discountValue);
-      console.log(`✅ Filled Discount Value: ${config.discountValue}`);
-    }
-
-    // Discount Max Amount (Required for Percentage)
-    if (config.discountMaxAmount) {
-      const discountMaxAmountInput = formContext.locator('input[formControlName="DiscountMaxAmount"]').first();
-      if (await discountMaxAmountInput.isVisible().catch(() => false)) {
-        await discountMaxAmountInput.fill(config.discountMaxAmount);
-        console.log(`✅ Filled Discount Max Amount: ${config.discountMaxAmount}`);
-      }
-    }
-
-    // Start Date
-    let selectedStartDay = today.getDate();
-    const startToggle = formContext.locator('mat-datepicker-toggle button').nth(0);
-    if (await startToggle.isVisible().catch(() => false)) {
-      await startToggle.click({ force: true });
-      await page.waitForTimeout(1000);
-      const todayCell = page.locator('.mat-calendar-body-today').first();
-      if (await todayCell.isVisible().catch(() => false)) {
-        const text = (await todayCell.innerText()).trim();
-        if (text) selectedStartDay = parseInt(text, 10);
-        await todayCell.click();
-      } else {
-        const firstCell = page.locator('.mat-calendar-body-cell:not([aria-disabled="true"])').first();
-        const text = (await firstCell.innerText()).trim();
-        if (text) selectedStartDay = parseInt(text, 10);
-        await firstCell.click();
-      }
-      await page.waitForTimeout(1000);
-      console.log(`✅ Selected Start Date from calendar: Day ${selectedStartDay}`);
-    }
-
-    // End Date
-    const endToggle = formContext.locator('mat-datepicker-toggle button').nth(1);
-    if (await endToggle.isVisible().catch(() => false)) {
-      await endToggle.click({ force: true });
-      await page.waitForTimeout(1000);
-      const nextMonthBtn = page.locator('button[aria-label="Next month"]').first();
-      if (await nextMonthBtn.isVisible().catch(() => false)) {
-        await nextMonthBtn.click();
-        await page.waitForTimeout(500);
-      }
-      const dayCell = page.locator('.mat-calendar-body-cell-content')
-        .filter({ hasText: new RegExp(`^${selectedStartDay}$`) })
-        .first();
-      if (await dayCell.isVisible().catch(() => false)) {
-        await dayCell.click();
-      } else {
-        await page.locator('.mat-calendar-body-cell:not([aria-disabled="true"])').last().click().catch(() => { });
-      }
-      await page.waitForTimeout(1000);
-      console.log(`✅ Selected End Date from calendar (1 month ahead from Start Date: Day ${selectedStartDay}).`);
-    }
-
-    // Description & Arabic Description
-    const descInput = formContext.locator('textarea[formControlName="Description"]').first();
-    if (await descInput.isVisible().catch(() => false)) {
-      await descInput.fill(config.description);
-    }
-
-    const descArInput = formContext.locator('textarea[formControlName="DescriptionArabic"]').first();
-    if (await descArInput.isVisible().catch(() => false)) {
-      await descArInput.fill(config.descriptionArabic);
-    }
-
-    // Max Count & Max Count Per User
-    const maxCountInput = formContext.locator('input[formControlName="MaxCount"]').first();
-    if (await maxCountInput.isVisible().catch(() => false)) {
-      await maxCountInput.fill('100');
-    }
-
-    const maxCountPerUserInput = formContext.locator('input[formControlName="MaxCountPerUser"]').first();
-    if (await maxCountPerUserInput.isVisible().catch(() => false)) {
-      await maxCountPerUserInput.fill('1');
-    }
-
-    // Day Type (OperationalDay)
-    const dayTypeSelect = formContext.locator('mat-select[formControlName="OperationalDay"]').first();
-    if (await dayTypeSelect.isVisible().catch(() => false)) {
-      await dayTypeSelect.click();
-      await page.waitForTimeout(1000);
-      await page.locator('mat-option').first().click().catch(() => page.keyboard.press('Escape'));
-      await page.waitForTimeout(1000);
-    }
-
-    // Start Time & End Time
-    const startTimeSelect = formContext.locator('mat-select[formControlName="StartTime"]').first();
-    if (await startTimeSelect.isVisible().catch(() => false)) {
-      await startTimeSelect.click();
-      await page.waitForTimeout(1000);
-      await page.locator('mat-option').first().click().catch(() => page.keyboard.press('Escape'));
-      await page.waitForTimeout(1000);
-    }
-
-    const endTimeSelect = formContext.locator('mat-select[formControlName="EndTime"]').first();
-    if (await endTimeSelect.isVisible().catch(() => false)) {
-      await endTimeSelect.click();
-      await page.waitForTimeout(1000);
-      await page.locator('mat-option').last().click().catch(() => page.keyboard.press('Escape'));
-      await page.waitForTimeout(1000);
-    }
-
-    // Order Counts & Values
-    const maxOrderCount = formContext.locator('input[formControlName="MaxOrderCount"]').first();
-    if (await maxOrderCount.isVisible().catch(() => false)) await maxOrderCount.fill('10');
-
-    const minOrderCount = formContext.locator('input[formControlName="MinOrderCount"]').first();
-    if (await minOrderCount.isVisible().catch(() => false)) await minOrderCount.fill('1');
-
-    const maxOrderValue = formContext.locator('input[formControlName="MaxOrderValue"]').first();
-    if (await maxOrderValue.isVisible().catch(() => false)) await maxOrderValue.fill('5000');
-
-    const minOrderValue = formContext.locator('input[formControlName="MinOrderValue"]').first();
-    if (await minOrderValue.isVisible().catch(() => false)) await minOrderValue.fill('100');
-
-    // Is First Time Only
-    // @ts-ignore
-    if (config.isFirstTimeOnly) {
-      const firstTimeToggle = formContext.locator('mat-slide-toggle:has-text("Is First Time Only") button, mat-slide-toggle[formControlName="IsFirstTimeOnly"] button, mat-slide-toggle[formControlName="IsFirstTimeOnly"], mat-slide-toggle:has-text("Is First Time Only")').first();
-      if (await firstTimeToggle.isVisible().catch(() => false)) {
-        const isChecked = (await firstTimeToggle.getAttribute('aria-checked').catch(() => null)) === 'true' ||
-          ((await firstTimeToggle.getAttribute('class').catch(() => '')) || '').includes('mat-checked');
-        if (!isChecked) {
-          await firstTimeToggle.click({ force: true });
-          await page.waitForTimeout(1000);
-        }
-        console.log('✅ Enabled Is First Time Only');
-      }
-    }
-
-    // Is Free Delivery
-    // @ts-ignore
-    if (config.isFreeDelivery) {
-      const freeDeliveryToggle = formContext.locator('mat-slide-toggle:has-text("Is Free Delivery") button, mat-slide-toggle[formControlName="IsFreeDelivery"] button, mat-slide-toggle[formControlName="IsFreeDelivery"], mat-slide-toggle:has-text("Is Free Delivery")').first();
-      if (await freeDeliveryToggle.isVisible().catch(() => false)) {
-        const isChecked = (await freeDeliveryToggle.getAttribute('aria-checked').catch(() => null)) === 'true' ||
-          ((await freeDeliveryToggle.getAttribute('class').catch(() => '')) || '').includes('mat-checked');
-        if (!isChecked) {
-          await freeDeliveryToggle.click({ force: true });
-          await page.waitForTimeout(1000);
-        }
-        console.log('✅ Enabled Is Free Delivery');
-      }
-    }
-
-    // Voucher Settings - Is Saveable Voucher (Saved in User Wallet)
-    if (config.isSaveableAsVoucher) {
-      const saveableToggle = formContext.locator(
-        'mat-slide-toggle[formControlName="IsSaveableAsVoucher"] button, ' +
-        'mat-slide-toggle:has-text("Is Saveable Voucher") button, ' +
-        'mat-slide-toggle:has-text("Saved in User Wallet") button, ' +
-        'mat-slide-toggle[formControlName="IsSaveableAsVoucher"], ' +
-        'mat-slide-toggle:has-text("Is Saveable Voucher"), ' +
-        'mat-slide-toggle:has-text("Saved in User Wallet")'
-      ).first();
-
-      if (await saveableToggle.isVisible().catch(() => false)) {
-        const isChecked = (await saveableToggle.getAttribute('aria-checked').catch(() => null)) === 'true' ||
-          ((await saveableToggle.getAttribute('class').catch(() => '')) || '').includes('mat-checked');
-        if (!isChecked) {
-          await saveableToggle.click({ force: true });
-          await page.waitForTimeout(1500);
-        }
-        console.log('✅ Enabled Is Saveable Voucher (Saved in User Wallet)');
-      }
-    }
-
-    // Voucher Settings - Is Voucher Campaign (Common Voucher)
-    if (config.isVoucherCampaign) {
-      const commonVoucherToggle = formContext.locator(
-        'mat-slide-toggle[formControlName="IsVoucherCampaign"] button, ' +
-        'mat-slide-toggle[formControlName="IsCommonVoucher"] button, ' +
-        'mat-slide-toggle:has-text("Is Voucher Campaign") button, ' +
-        'mat-slide-toggle:has-text("Common Voucher") button, ' +
-        'mat-slide-toggle[formControlName="IsVoucherCampaign"], ' +
-        'mat-slide-toggle[formControlName="IsCommonVoucher"], ' +
-        'mat-slide-toggle:has-text("Is Voucher Campaign"), ' +
-        'mat-slide-toggle:has-text("Common Voucher")'
-      ).first();
-
-      if (await commonVoucherToggle.isVisible().catch(() => false)) {
-        const isChecked = (await commonVoucherToggle.getAttribute('aria-checked').catch(() => null)) === 'true' ||
-          ((await commonVoucherToggle.getAttribute('class').catch(() => '')) || '').includes('mat-checked');
-        if (!isChecked) {
-          await commonVoucherToggle.click({ force: true });
-          await page.waitForTimeout(1500);
-        }
-        console.log('✅ Enabled Is Voucher Campaign (Common Voucher)');
-      }
-    }
-
-    // Fill additional title/subtitle fields if they become visible
-    if (config.title) {
-      const titleInput = formContext.locator('input[formControlName="Title"]').first();
-      if (await titleInput.isVisible().catch(() => false)) {
-        await titleInput.fill(config.title);
-        console.log('✅ Filled Voucher Title');
-      }
-    }
-    if (config.titleArabic) {
-      const titleArInput = formContext.locator('input[formControlName="TitleArabic"]').first();
-      if (await titleArInput.isVisible().catch(() => false)) {
-        await titleArInput.fill(config.titleArabic);
-        console.log('✅ Filled Voucher Title Arabic');
-      }
-    }
-    if (config.subTitle) {
-      const subTitleInput = formContext.locator('input[formControlName="SubTitle"]').first();
-      if (await subTitleInput.isVisible().catch(() => false)) {
-        await subTitleInput.fill(config.subTitle);
-        console.log('✅ Filled Voucher Sub Title');
-      }
-    }
-    if (config.subTitleArabic) {
-      const subTitleArInput = formContext.locator('input[formControlName="SubTitleArabic"]').first();
-      if (await subTitleArInput.isVisible().catch(() => false)) {
-        await subTitleArInput.fill(config.subTitleArabic);
-        console.log('✅ Filled Voucher Sub Title Arabic');
-      }
-    }
-
-    // 6. Submit Form
-    const saveBtn = formContext.locator('button.center-button:has-text("Create"), button:has-text("Create"), button.mat-primary, button:has-text("Create and set Stores")').first();
-    if (await saveBtn.isVisible().catch(() => false)) {
-      const btnText = await saveBtn.innerText().catch(() => '');
-      await saveBtn.click();
-      await page.waitForTimeout(2500);
-      console.log(`✅ Clicked Create Promo Code button (Text: "${btnText}").`);
-    }
-
-    // Optional Store Selection check (Step 1: before/during save/popup)
-    await handleOptionalStoreSelection(page);
-
-    // 7. Dismiss success SweetAlerts
-    const swalBtn = page.locator('.swal2-confirm, button:has-text("OK")').filter({ visible: true }).first();
-    await swalBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => { });
-    if (await swalBtn.isVisible().catch(() => false)) {
-      await swalBtn.click({ force: true });
-      console.log('✅ Dismissed success popup');
-      await page.waitForTimeout(1500);
-    }
-
-    // Optional Store Selection check (Step 2: after dismissing popup in case it loads then)
-    await handleOptionalStoreSelection(page);
-
-    return generatedCode;
-  }
-
-  /**
-   * @param {import('@playwright/test').Page} page
-   */
-  async function openPromoCodeManagementPage(page) {
-    const searchInput = page.locator('input[matinput], input.mat-input-element, input[placeholder*="Search" i]').first();
-    await searchInput.waitFor({ state: 'visible', timeout: 20000 });
-    await searchInput.clear();
-    await searchInput.fill('Auto Campaign');
-    await page.waitForTimeout(3000);
-
-    let firstRowData = page.locator('mat-row, tbody tr').first();
-    if (!(await firstRowData.isVisible().catch(() => false))) {
-      await searchInput.clear();
-      await page.waitForTimeout(2500);
-      firstRowData = page.locator('mat-row, tbody tr').first();
-    }
-    await firstRowData.waitFor({ state: 'visible', timeout: 15000 });
-
-    const actionBtn = firstRowData.locator('.mat-menu-trigger, i.mar-icon-more-h, i.mar-icon-more-v, button[mat-icon-button], td:last-child button, td:last-child i').first();
-    if (await actionBtn.isVisible().catch(() => false)) {
-      await actionBtn.click({ force: true });
-    } else {
-      const box = await firstRowData.boundingBox();
-      if (box) await page.mouse.click(box.x + box.width - 30, box.y + box.height / 2);
-    }
-    await page.waitForTimeout(1000);
-
-    const viewBtn = page.locator('button.mat-menu-item:has-text("View"), [role="menuitem"]:has-text("View")').filter({ visible: true }).first();
-    await expect(viewBtn).toBeVisible({ timeout: 15000 });
-    await viewBtn.click({ force: true });
-    await page.waitForTimeout(4000);
-
-    const promoCard = page.locator('div.plain-card:has(h5:has-text("Promo Code")), .card:has-text("Promo Code")').first();
-    await expect(promoCard).toBeVisible({ timeout: 15000 });
-    await promoCard.click({ force: true });
-    await page.waitForTimeout(3000);
-
-    await expect(
-      page.locator('h1, h2, h3, h4, .page-title').filter({ hasText: /Promo Code|Campaigns\s*-\s*Promo Code Management/i }).first()
-    ).toBeVisible({ timeout: 20000 });
-  }
-
-  const promoCodeTestCases = [
-    {
-      id: 'PC-01',
-      name: 'Create and manage percentage promo code',
-      config: {
-        prefix: 'PCT',
-        discountType: 'Percentage',
-        discountValue: '10',
-        discountMaxAmount: '100',
-        description: 'This promo code provides a percentage discount. Created by Playwright Auto.',
-        descriptionArabic: 'Arabic percentage promo code description.'
-      }
-    },
-    {
-      id: 'PC-02',
-      name: 'Create and manage amount promo code',
-      config: {
-        prefix: 'AMT',
-        discountType: 'Amount',
-        discountValue: '15',
-        description: 'This promo code provides a flat amount discount. Created by Playwright Auto.',
-        descriptionArabic: 'Arabic amount promo code description.'
-      }
-    },
-    {
-      id: 'PC-03',
-      name: 'Create and manage saveable wallet voucher promo code',
-      config: {
-        prefix: 'VCH',
-        discountType: 'Percentage',
-        discountValue: '10',
-        discountMaxAmount: '100',
-        isSaveableAsVoucher: true,
-        title: 'Exclusive Voucher',
-        titleArabic: 'Arabic Exclusive Voucher',
-        subTitle: 'Saved in User Wallet',
-        subTitleArabic: 'Arabic Saved in User Wallet',
-        description: 'This promo code is a saveable wallet voucher. Created by Playwright Auto.',
-        descriptionArabic: 'Arabic saveable wallet voucher description.'
-      }
-    },
-    {
-      id: 'PC-04',
-      name: 'Create and manage common campaign voucher promo code',
-      config: {
-        prefix: 'CMN',
-        discountType: 'Percentage',
-        discountValue: '10',
-        discountMaxAmount: '100',
-        isVoucherCampaign: true,
-        title: 'Common Campaign Voucher',
-        titleArabic: 'Arabic Common Campaign Voucher',
-        subTitle: 'Common Voucher',
-        subTitleArabic: 'Arabic Common Voucher',
-        description: 'This promo code is a common campaign voucher. Created by Playwright Auto.',
-        descriptionArabic: 'Arabic common campaign voucher description.'
-      }
-    },
-    {
-      id: 'PC-05',
-      name: 'Create and manage first-time-only promo code',
-      config: {
-        prefix: 'FTO',
-        discountType: 'Percentage',
-        discountValue: '10',
-        discountMaxAmount: '100',
-        isFirstTimeOnly: true,
-        description: 'This promo code is strictly for first-time-only users. Created by Playwright Auto.',
-        descriptionArabic: 'Arabic first-time-only promo code description.'
-      }
-    },
-    {
-      id: 'PC-06',
-      name: 'Create and manage free-delivery promo code',
-      config: {
-        prefix: 'FRD',
-        discountType: 'Percentage',
-        discountValue: '10',
-        discountMaxAmount: '100',
-        isFreeDelivery: true,
-        description: 'This promo code provides free delivery. Created by Playwright Auto.',
-        descriptionArabic: 'Arabic free-delivery promo code description.'
-      }
-    },
-    {
-      id: 'PC-07',
-      name: 'Create and manage first-time-only free-delivery promo code',
-      config: {
-        prefix: 'BTH',
-        discountType: 'Amount',
-        discountValue: '10',
-        isFirstTimeOnly: true,
-        isFreeDelivery: true,
-        description: 'First-time-only and free-delivery combined promo code. Created by Playwright Auto.',
-        descriptionArabic: 'Arabic combined first-time-only and free-delivery promo code description.'
-      }
-    }
-  ];
-
-  test('PC-00: Verify Promo Code management page and create action', async ({ page }) => {
-    test.setTimeout(180000);
-
-    await openPromoCodeManagementPage(page);
-
-    const tableOrEmpty = page.locator('mat-table, table, mat-row, tbody tr')
-      .or(page.getByText(/No\s+(Data|Records|Results)|Total\s+0\s+results/i))
-      .first();
-    const listReady = await tableOrEmpty.isVisible({ timeout: 20000 }).catch(() => false);
-    test.skip(!listReady, 'Promo Code management list is not visible in this environment.');
-
-    const createPromoBtn = page.locator('button.create-button:has-text("Create Promo"), button:has-text("Create Promo"), button:has-text("Create")').filter({ visible: true }).first();
-    const createVisible = await createPromoBtn.isVisible({ timeout: 15000 }).catch(() => false);
-    test.skip(!createVisible, 'Create Promo control is not visible in this environment.');
-  });
-
-  /**
-   * @param {import("playwright-core").Page} page
-   * @param {{ id: string; name: string; config: { prefix: string; discountType: string; discountValue: string; discountMaxAmount: string; description: string; descriptionArabic: string; isSaveableAsVoucher?: undefined; title?: undefined; titleArabic?: undefined; subTitle?: undefined; subTitleArabic?: undefined; isVoucherCampaign?: undefined; isFirstTimeOnly?: undefined; isFreeDelivery?: undefined; }; } | { id: string; name: string; config: { prefix: string; discountType: string; discountValue: string; description: string; descriptionArabic: string; discountMaxAmount?: undefined; isSaveableAsVoucher?: undefined; title?: undefined; titleArabic?: undefined; subTitle?: undefined; subTitleArabic?: undefined; isVoucherCampaign?: undefined; isFirstTimeOnly?: undefined; isFreeDelivery?: undefined; }; } | { id: string; name: string; config: { prefix: string; discountType: string; discountValue: string; discountMaxAmount: string; isSaveableAsVoucher: boolean; title: string; titleArabic: string; subTitle: string; subTitleArabic: string; description: string; descriptionArabic: string; isVoucherCampaign?: undefined; isFirstTimeOnly?: undefined; isFreeDelivery?: undefined; }; } | { id: string; name: string; config: { prefix: string; discountType: string; discountValue: string; discountMaxAmount: string; isVoucherCampaign: boolean; title: string; titleArabic: string; subTitle: string; subTitleArabic: string; description: string; descriptionArabic: string; isSaveableAsVoucher?: undefined; isFirstTimeOnly?: undefined; isFreeDelivery?: undefined; }; } | { id: string; name: string; config: { prefix: string; discountType: string; discountValue: string; discountMaxAmount: string; isFirstTimeOnly: boolean; description: string; descriptionArabic: string; isSaveableAsVoucher?: undefined; title?: undefined; titleArabic?: undefined; subTitle?: undefined; subTitleArabic?: undefined; isVoucherCampaign?: undefined; isFreeDelivery?: undefined; }; } | { id: string; name: string; config: { prefix: string; discountType: string; discountValue: string; discountMaxAmount: string; isFreeDelivery: boolean; description: string; descriptionArabic: string; isSaveableAsVoucher?: undefined; title?: undefined; titleArabic?: undefined; subTitle?: undefined; subTitleArabic?: undefined; isVoucherCampaign?: undefined; isFirstTimeOnly?: undefined; }; } | { id: string; name: string; config: { prefix: string; discountType: string; discountValue: string; isFirstTimeOnly: boolean; isFreeDelivery: boolean; description: string; descriptionArabic: string; discountMaxAmount?: undefined; isSaveableAsVoucher?: undefined; title?: undefined; titleArabic?: undefined; subTitle?: undefined; subTitleArabic?: undefined; isVoucherCampaign?: undefined; }; }} testCase
-   */
-  async function runPromoCodeTestCase(page, testCase) {
-    test.setTimeout(420000);
-
-    console.log(`\nStarting ${testCase.id}: ${testCase.name}`);
-    const generatedCode = await createPromoCode(page, testCase.config);
-    await runPromoCodeCRUD(page, generatedCode);
-
-    await goToPage(page, '#/home/campaigns');
-    await page.waitForTimeout(2000);
-  }
-
-  // ============================================================
-  // PC-01: Create and manage percentage promo code
-  // Run: npx playwright test tests/12-Campaigns/02.1-promo-code.spec.js -g "PC-01"
-  // ============================================================
-  test('PC-01: Create and manage percentage promo code', async ({ page }) => {
-    await runPromoCodeTestCase(page, promoCodeTestCases[0]);
-  });
-
-  // ============================================================
-  // PC-02: Create and manage amount promo code
-  // Run: npx playwright test tests/12-Campaigns/02.1-promo-code.spec.js -g "PC-02"
-  // ============================================================
-  test('PC-02: Create and manage amount promo code', async ({ page }) => {
-    await runPromoCodeTestCase(page, promoCodeTestCases[1]);
-  });
-
-  // ============================================================
-  // PC-03: Create and manage saveable wallet voucher promo code
-  // Run: npx playwright test tests/12-Campaigns/02.1-promo-code.spec.js -g "PC-03"
-  // ============================================================
-  test('PC-03: Create and manage saveable wallet voucher promo code', async ({ page }) => {
-    await runPromoCodeTestCase(page, promoCodeTestCases[2]);
-  });
-
-  // ============================================================
-  // PC-04: Create and manage common campaign voucher promo code
-  // Run: npx playwright test tests/12-Campaigns/02.1-promo-code.spec.js -g "PC-04"
-  // ============================================================
-  test('PC-04: Create and manage common campaign voucher promo code', async ({ page }) => {
-    await runPromoCodeTestCase(page, promoCodeTestCases[3]);
-  });
-
-  // ============================================================
-  // PC-05: Create and manage first-time-only promo code
-  // Run: npx playwright test tests/12-Campaigns/02.1-promo-code.spec.js -g "PC-05"
-  // ============================================================
-  test('PC-05: Create and manage first-time-only promo code', async ({ page }) => {
-    await runPromoCodeTestCase(page, promoCodeTestCases[4]);
-  });
-
-  // ============================================================
-  // PC-06: Create and manage free-delivery promo code
-  // Run: npx playwright test tests/12-Campaigns/02.1-promo-code.spec.js -g "PC-06"
-  // ============================================================
-  test('PC-06: Create and manage free-delivery promo code', async ({ page }) => {
-    await runPromoCodeTestCase(page, promoCodeTestCases[5]);
-  });
-
-  // ============================================================
-  // PC-07: Create and manage first-time-only free-delivery promo code
-  // Run: npx playwright test tests/12-Campaigns/02.1-promo-code.spec.js -g "PC-07"
-  // ============================================================
-  test('PC-07: Create and manage first-time-only free-delivery promo code', async ({ page }) => {
-    await runPromoCodeTestCase(page, promoCodeTestCases[6]);
-  });
-
-  test.skip('Create and Manage all Promo Code Types Sequentially', async ({ page }) => {
-    test.setTimeout(900000); // 15 minutes timeout to prevent global test timeouts
-
-    const promoCodeConfigs = [
-      {
-        prefix: 'PCT',
-        discountType: 'Percentage',
-        discountValue: '10',
-        discountMaxAmount: '100',
-        description: 'This promo code provides a flat discount on all qualifying items. Created by Playwright Auto.',
-        descriptionArabic: 'هذا الرمز الترويجي يوفر خصماً ثابتاً على جميع العناصر المؤهلة. تم الإنشاء بواسطة التشغيل الآلي.'
-      },
-      {
-        prefix: 'AMT',
-        discountType: 'Amount',
-        discountValue: '15',
-        description: 'This promo code provides a flat discount on all qualifying items. Created by Playwright Auto.',
-        descriptionArabic: 'هذا الرمز الترويجي يوفر خصماً ثابتاً على جميع العناصر المؤهلة. تم الإنشاء بواسطة التشغيل الآلي.'
-      },
-      {
-        prefix: 'VCH',
-        discountType: 'Percentage',
-        discountValue: '10',
-        discountMaxAmount: '100',
-        isSaveableAsVoucher: true,
-        title: 'Exclusive Voucher',
-        titleArabic: 'قسيمة حصرية',
-        subTitle: 'Saved in User Wallet',
-        subTitleArabic: 'محفوظة في محفظة المستخدم',
-        description: 'This promo code is a saveable wallet voucher. Created by Playwright Auto.',
-        descriptionArabic: 'تم الإنشاء بواسطة التشغيل الآلي كقسيمة قابلة للحفظ.'
-      },
-      {
-        prefix: 'CMN',
-        discountType: 'Percentage',
-        discountValue: '10',
-        discountMaxAmount: '100',
-        isVoucherCampaign: true,
-        title: 'Common Campaign Voucher',
-        titleArabic: 'قسيمة حملة عامة',
-        subTitle: 'Common Voucher',
-        subTitleArabic: 'قسيمة عامة',
-        description: 'This promo code is a common campaign voucher. Created by Playwright Auto.',
-        descriptionArabic: 'تم الإنشاء بواسطة التشغيل الآلي كقسيمة حملة عامة.'
-      },
-      {
-        prefix: 'FTO',
-        discountType: 'Percentage',
-        discountValue: '10',
-        discountMaxAmount: '100',
-        isFirstTimeOnly: true,
-        description: 'This promo code is strictly for First Time Only users. Created by Playwright Auto.',
-        descriptionArabic: 'هذا الرمز الترويجي مخصص فقط للمستخدمين لأول مرة. تم الإنشاء بواسطة التشغيل الآلي.'
-      },
-      {
-        prefix: 'FRD',
-        discountType: 'Percentage',
-        discountValue: '10',
-        discountMaxAmount: '100',
-        isFreeDelivery: true,
-        description: 'This promo code provides Free Delivery. Created by Playwright Auto.',
-        descriptionArabic: 'هذا الرمز الترويجي يوفر توصيل مجاني. تم الإنشاء بواسطة التشغيل الآلي.'
-      },
-      {
-        prefix: 'BTH',
-        discountType: 'Amount',
-        discountValue: '10',
-        isFirstTimeOnly: true,
-        isFreeDelivery: true,
-        description: 'First Time Only AND Free Delivery combined promo code. Created by Playwright Auto.',
-        descriptionArabic: 'الرمز الترويجي لأول مرة وتوصيل مجاني معاً. تم الإنشاء بواسطة التشغيل الآلي.'
-      }
-    ];
-
-    for (const config of promoCodeConfigs) {
-      console.log(`\n🚀 Starting process for Promo Code Type: ${config.prefix} (${config.discountType})`);
-      const generatedCode = await createPromoCode(page, config);
-      await runPromoCodeCRUD(page, generatedCode);
-      
-      // Go back to campaigns list page directly to ensure the next block starts in a clean state
-      await goToPage(page, '#/home/campaigns');
-      await page.waitForTimeout(2000);
-    }
-  });
-
 });
