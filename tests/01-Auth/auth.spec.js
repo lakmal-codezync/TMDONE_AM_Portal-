@@ -40,6 +40,10 @@ const fieldErrors = (page) => page.locator('mat-error').filter({ visible: true }
 /** @param {import('@playwright/test').Page} page */
 const appShell = (page) => page.locator('li.user_profile');
 
+// These tests type the real password and receive the access token; a trace would record
+// both, and CI artifacts can be downloaded by anyone who can see the repository.
+test.use({ trace: 'off' });
+
 test.beforeEach(() => {
   requireCredentials();
 });

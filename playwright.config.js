@@ -5,9 +5,15 @@ import { defineConfig, devices } from '@playwright/test';
  * TMDone Admin Console - Playwright Configuration
  * Base URL: https://console.demo.dr.tmd1.org
  */
+// Only the origin of TMDONE_BASE_URL is used (a value with a #/route would break every URL).
+const BASE_URL = new URL(process.env.TMDONE_BASE_URL || 'https://console.demo.dr.tmd1.org').origin;
+
 export default defineConfig({
   // Test folder.
   testDir: './tests',
+
+  // Signs in once before the run, outside any test (keeps the password out of traces).
+  globalSetup: './tests/helpers/global-setup.js',
 
   // Run test files sequentially for stability.
   fullyParallel: false,
@@ -31,7 +37,7 @@ export default defineConfig({
   // Common settings for all tests.
   use: {
     // TMDone Admin demo URL.
-    baseURL: 'https://console.demo.dr.tmd1.org',
+    baseURL: BASE_URL,
 
     // Capture screenshots on failure.
     screenshot: 'only-on-failure',

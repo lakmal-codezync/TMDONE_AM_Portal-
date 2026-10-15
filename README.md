@@ -114,21 +114,41 @@ Generated screenshots are saved in `docs/screenshots/` as 1440x900 PNG files.
 - Browser: Chromium
 - Headless by default
 - Screenshots and videos are captured on failure
-- Trace collection enabled on first retry
+- Trace collection enabled on first retry (off for the Auth suite, which types the real password)
+- Signs in once per run (global setup) and reuses the session in every test
 - Reporters: HTML (`playwright-report/`), JSON (`test-results/results.json`), and list (console)
 
 ## Continuous Integration
 
-`.github/workflows/daily-playwright.yml` runs the full suite automatically every day at **2:00 AM Asia/Colombo time** (8:30 PM UTC), and can also be triggered manually from the Actions tab (`workflow_dispatch`).
+### CI (`.github/workflows/ci.yml`)
 
-After the run, it emails a results summary via Gmail SMTP - one table per spec file listing each test's **Test ID**, **description**, and **status** (pass/fail/flaky/skipped), plus overall pass/fail counts. The summary is built by `.github/scripts/build-email-summary.js` from the JSON reporter output.
+Runs on every push and pull request, without touching the live site:
 
-To enable the email step, set these repository secrets:
+- every script parses (`node --check`)
+- no `_debug*` / `_audit*` files and no `test.only` are committed (they would run nightly)
+- every spec loads (`npx playwright test --list --forbid-only`)
 
-- `GMAIL_ADDRESS` - the Gmail address to send from
-- `GMAIL_APP_PASSWORD` - a Google Account [App Password](https://myaccount.google.com/apppasswords) for that address (requires 2-Step Verification)
+On pushes to `main` (or run by hand) it also runs a short **smoke test** on the live demo: the Auth suite (without the wrong-password test) and the Change Password / header and sidebar checks. If the demo site is down the smoke test is skipped with a warning.
 
-The HTML report and raw test results are also uploaded as workflow artifacts (14-day retention) regardless of whether the email sends.
+### Nightly E2E (`.github/workflows/daily-playwright.yml`)
+
+Runs the whole suite every night (scheduled 00:17 Sri Lanka time; GitHub often starts scheduled runs a few hours late) and can be started from the Actions tab with **Run workflow**, optionally for one folder (e.g. `08-Offers`).
+
+1. **Preflight** - checks the console and its API respond. If not, no tests run and the email says the site is down.
+2. **Tests** - the suite in 3 shards that run one after another (all tests share one live account), each with its own 6-hour job limit. A shard stops early after 25 failed tests, and skips itself if the site went down meanwhile.
+3. **Report** - merges the shard reports into one HTML report (`playwright-report` artifact, 7 days) and always sends the email: one table per spec file with each test's ID, description, status and failure reason, or a "site down" / "no results" notice.
+
+Settings (repository **Settings -> Secrets and variables -> Actions**):
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `TMDONE_EMAIL`, `TMDONE_PASSWORD` | secret | the shared test account |
+| `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD` | secret | Gmail sender and its [App Password](https://myaccount.google.com/apppasswords) |
+| `TMDONE_BASE_URL` | variable (optional) | console URL, default `https://console.demo.dr.tmd1.org`; only the origin is used |
+| `TMDONE_API_URL` | variable (optional) | API URL for the preflight check, default `https://amportal.demo.dr.tmd1.org` |
+| `REPORT_EMAIL_TO` | variable (optional) | email recipients (comma separated), default `lakmal@codezync.com` |
+
+The tests sign in once per run in `tests/helpers/global-setup.js`, outside any test, so the password and access token never appear in a test's trace. Reports can contain screenshots of the console, so keep this repository private.
 
 ## Folder Structure
 
@@ -137,8 +157,11 @@ The HTML report and raw test results are also uploaded as workflow artifacts (14
 - `tests/fixtures/` - test upload files and sample assets
 - `docs/screenshots/` - real screenshots used in this README
 - `scripts/capture-readme-screenshots.mjs` - README screenshot capture script
-- `.github/workflows/daily-playwright.yml` - scheduled CI run and email report
+- `.github/workflows/ci.yml` - checks on every push / pull request, smoke test on `main`
+- `.github/workflows/daily-playwright.yml` - nightly full run, email report
 - `.github/scripts/build-email-summary.js` - builds the HTML email summary from test results
+- `.github/playwright-merge.config.js` - merges the nightly shard reports
+- `tests/helpers/global-setup.js` - signs in once before each run
 - `playwright.config.js` - Playwright settings
 - `package.json` - npm scripts and dependencies
 

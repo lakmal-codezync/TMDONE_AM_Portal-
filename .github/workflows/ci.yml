@@ -1,0 +1,127 @@
+name: CI
+
+# On every push and pull request:
+#   checks -> static checks that need no live site: every script parses, no debug files
+#             or focused tests are committed, and every spec loads (playwright --list).
+# On pushes to main (and on demand):
+#   smoke  -> a short read-only run on the live demo: login/session (Auth, without the
+#             wrong-password test) and the header/sidebar shell of every page.
+
+on:
+  push:
+    paths-ignore: ['**.md', 'docs/**']
+  pull_request:
+    paths-ignore: ['**.md', 'docs/**']
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Static checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax-check every script
+        run: |
+          status=0
+          while IFS= read -r -d '' file; do
+            node --check "$file" || status=1
+          done < <(find tests .github playwright.config.js -name '*.js' -print0)
+          exit $status
+
+      - name: No debug files or focused tests committed
+        run: |
+          debug_files=$(find tests \( -name '_debug*' -o -name '_audit*' \) -print)
+          if [ -n "$debug_files" ]; then
+            echo "::error::Debug files must not be committed (they run in the nightly suite):"
+            echo "$debug_files"
+            exit 1
+          fi
+          if grep -rnE '\b(test|describe)\.only\(' tests; then
+            echo "::error::Remove test.only / describe.only before committing."
+            exit 1
+          fi
+
+      - name: Every spec loads
+        env:
+          CI: true
+        run: |
+          npx playwright test --list --forbid-only > test-list.txt
+          tail -n 1 test-list.txt
+          echo "### $(tail -n 1 test-list.txt)" >> "$GITHUB_STEP_SUMMARY"
+
+  smoke:
+    name: Smoke test (live demo)
+    needs: checks
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: live-demo-smoke
+      cancel-in-progress: true
+    env:
+      CI: true
+      TMDONE_BASE_URL: ${{ vars.TMDONE_BASE_URL || 'https://console.demo.dr.tmd1.org' }}
+      TMDONE_EMAIL: ${{ secrets.TMDONE_EMAIL }}
+      TMDONE_PASSWORD: ${{ secrets.TMDONE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Check the demo site responds
+        id: site
+        run: |
+          console_url="$(node -e 'console.log(new URL(process.env.TMDONE_BASE_URL).origin)')/"
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$console_url" || true)
+          echo "console $console_url -> $code"
+          if [ "$code" = "200" ]; then
+            echo "up=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "up=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Demo site unreachable ($code) - smoke test skipped. This is an environment problem, not a code problem."
+          fi
+
+      - name: Run smoke tests
+        if: steps.site.outputs.up == 'true'
+        run: npx playwright test "01-Auth" "19-Change Password" --grep-invert "AUTH-03" --reporter=list,html
+
+      - name: Upload report on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-report
+          path: playwright-report/
+          retention-days: 3
+          if-no-files-found: ignore

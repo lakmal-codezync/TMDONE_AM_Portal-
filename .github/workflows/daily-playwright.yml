@@ -1,30 +1,95 @@
-name: Daily Playwright System Run
+name: Nightly E2E (live demo)
+
+# Runs the whole Playwright suite against the live demo environment every night,
+# then emails a summary and attaches the HTML report to the run.
+#
+#   preflight  -> is the demo site up? If not: no tests, "site down" email.
+#   e2e        -> the suite in 3 shards, run ONE AFTER ANOTHER (all tests share one
+#                 live account and its test data), each shard with its own time limit.
+#   report     -> merges the shard reports, emails the summary (always), uploads the report.
 
 on:
   schedule:
-    # Runs every day at 2:00 AM Asia/Colombo time.
-    # GitHub Actions schedules are in UTC, so 2:00 AM SLST = 8:30 PM UTC.
-    - cron: '30 20 * * *'
+    # 18:47 UTC = 00:17 Sri Lanka time. GitHub starts scheduled runs late when it is busy
+    # (3-5 hours lately) and the :00/:30 marks are the most delayed, so start early and off-peak.
+    - cron: '47 18 * * *'
   workflow_dispatch:
+    inputs:
+      tests:
+        description: 'Run only these specs (folder or file name, e.g. 08-Offers). Blank = whole suite.'
+        required: false
+        default: ''
+        type: string
+
+# Never run two suites at the same time against the shared live account.
+concurrency:
+  group: live-demo-e2e
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Not secrets. Only the origin of TMDONE_BASE_URL is used, whatever path it carries.
+  TMDONE_BASE_URL: ${{ vars.TMDONE_BASE_URL || 'https://console.demo.dr.tmd1.org' }}
+  TMDONE_API_URL: ${{ vars.TMDONE_API_URL || 'https://amportal.demo.dr.tmd1.org' }}
 
 jobs:
-  system-tests:
-    name: Run full Playwright system tests
+  preflight:
+    name: Demo site reachable
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 15
+    outputs:
+      site_up: ${{ steps.check.outputs.site_up }}
+      detail: ${{ steps.check.outputs.detail }}
+    steps:
+      - name: Check the console and its API respond (5 tries, 90 s apart)
+        id: check
+        run: |
+          console_url="$(node -e 'console.log(new URL(process.env.TMDONE_BASE_URL).origin)')/"
+          api_url="$(node -e 'console.log(new URL(process.env.TMDONE_API_URL).origin)')/"
+          site_up=false
+          for try in 1 2 3 4 5; do
+            console_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$console_url" || true)
+            api_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$api_url" || true)
+            detail="console $console_url -> $console_code, api $api_url -> $api_code (try $try of 5)"
+            echo "$detail"
+            if [ "$console_code" = "200" ] && [ "$api_code" != "000" ] && [ "${api_code:0:1}" != "5" ]; then
+              site_up=true
+              break
+            fi
+            if [ "$try" -lt 5 ]; then sleep 90; fi
+          done
+          echo "site_up=$site_up" >> "$GITHUB_OUTPUT"
+          echo "detail=$detail" >> "$GITHUB_OUTPUT"
 
+      - name: Stop when the site is down
+        if: steps.check.outputs.site_up != 'true'
+        run: |
+          echo "::error::Demo site unreachable - tests not run. ${{ steps.check.outputs.detail }}"
+          exit 1
+
+  e2e:
+    name: Tests (shard ${{ matrix.shard }} of 3)
+    needs: preflight
+    runs-on: ubuntu-latest
+    # GitHub's limit for one job is 360 minutes; Playwright stops itself at 320 (below)
+    # so it can still write its report before the job is killed.
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        shard: [1, 2, 3]
     env:
+      CI: true
       TMDONE_EMAIL: ${{ secrets.TMDONE_EMAIL }}
       TMDONE_PASSWORD: ${{ secrets.TMDONE_PASSWORD }}
-      TMDONE_BASE_URL: ${{ secrets.TMDONE_BASE_URL || 'https://console.demo.dr.tmd1.org' }}
-      CI: true
-
+      TESTS: ${{ inputs.tests }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -32,43 +97,107 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Playwright Chromium
+      - name: Cache Playwright browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: Run full system test suite
-        run: npm run test:all
+      # Shards run hours apart: don't spend a whole shard timing out if the site went down.
+      - name: Check the demo site is still up
+        run: |
+          console_url="$(node -e 'console.log(new URL(process.env.TMDONE_BASE_URL).origin)')/"
+          for try in 1 2 3; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$console_url" || true)
+            echo "console $console_url -> $code (try $try of 3)"
+            if [ "$code" = "200" ]; then exit 0; fi
+            sleep 60
+          done
+          echo "::error::Demo site went down before shard ${{ matrix.shard }} - not run."
+          exit 1
+
+      - name: Run tests
+        run: |
+          specs=()
+          if [ -n "$TESTS" ]; then specs+=("$TESTS"); fi
+          npx playwright test "${specs[@]}" \
+            --shard=${{ matrix.shard }}/3 \
+            --reporter=blob,list \
+            --max-failures=25 \
+            --global-timeout=19200000 \
+            --pass-with-no-tests
+
+      - name: Upload shard report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: blob-report-${{ matrix.shard }}
+          path: blob-report/
+          retention-days: 3
+          if-no-files-found: ignore
+
+  report:
+    name: Report and email
+    needs: [preflight, e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download shard reports
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: blob-report-*
+          path: all-blob-reports
+          merge-multiple: true
+
+      - name: Merge shard reports
+        run: |
+          if ls all-blob-reports/*.zip >/dev/null 2>&1; then
+            npx playwright merge-reports --config .github/playwright-merge.config.js all-blob-reports
+          else
+            echo "No shard reports to merge."
+          fi
 
       - name: Build email summary
         id: summary
-        if: always()
+        env:
+          SITE_UP: ${{ needs.preflight.outputs.site_up }}
+          SITE_DETAIL: ${{ needs.preflight.outputs.detail }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node .github/scripts/build-email-summary.js
 
-      - name: Email daily test results
-        if: always()
+      - name: Email the results
         continue-on-error: true
-        uses: dawidd6/action-send-mail@v3
+        uses: dawidd6/action-send-mail@v22
         with:
           server_address: smtp.gmail.com
           server_port: 465
           username: ${{ secrets.GMAIL_ADDRESS }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
           subject: ${{ steps.summary.outputs.subject }}
-          to: lakmal@codezync.com
+          to: ${{ vars.REPORT_EMAIL_TO || 'lakmal@codezync.com' }}
           from: TMDone Playwright CI <${{ secrets.GMAIL_ADDRESS }}>
           html_body: file://email-summary.html
 
-      - name: Upload Playwright report
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Upload HTML report
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-report
           path: playwright-report/
-          retention-days: 14
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: test-results/
-          retention-days: 14
+          retention-days: 7
+          if-no-files-found: ignore

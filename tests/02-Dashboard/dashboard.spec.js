@@ -609,7 +609,7 @@ test('DASH-20: Dashboard shows New Assignments', async ({ page }) => {
   await expect(page.locator('app-assignments-card h3')).toContainText('New Assignments');
   await expectNotificationListMatchesApi(page, 'app-assignments-card', assignments.body);
 
-  console.log(`DASH-20 PASSED: ${assignments.body.Items.length} assignments rendered (matches API).`);
+  console.log(`DASH-20 PASSED: ${(assignments.body.Items || []).length} assignments rendered (matches API).`);
 });
 
 // ============================================================
@@ -623,7 +623,7 @@ test('DASH-21: Dashboard shows New Notifications', async ({ page }) => {
   await expect(page.locator('app-notification-card h3')).toContainText('New Notifications');
   await expectNotificationListMatchesApi(page, 'app-notification-card', notifications.body);
 
-  console.log(`DASH-21 PASSED: ${notifications.body.Items.length} notifications rendered (matches API).`);
+  console.log(`DASH-21 PASSED: ${(notifications.body.Items || []).length} notifications rendered (matches API).`);
 });
 
 // ============================================================
@@ -661,7 +661,8 @@ test('DASH-22: Dashboard allows filtering by Today, Week, and Month', async ({ p
     for (const list of TOP_LISTS) {
       await expectTopListMatchesApi(page, list, response.body[list.apiKey]);
     }
-    console.log(`  ${type}: ${response.requestBody.DateRange} -> ${response.body.TopTenRestaurants.length} restaurants`);
+    // The API returns null (not []) for a list with no data, e.g. "Today" early in the morning.
+    console.log(`  ${type}: ${response.requestBody.DateRange} -> ${(response.body.TopTenRestaurants || []).length} restaurants`);
   }
 
   console.log('DASH-22 PASSED: Today/Week/Month filters query the right window and re-render the lists.');
@@ -684,7 +685,7 @@ for (const [id, list] of [
     await expect(page.locator(list.card)).toBeVisible();
     await expectTopListMatchesApi(page, list, response.body[list.apiKey]);
 
-    console.log(`${id} PASSED: ${list.title} renders ${response.body[list.apiKey].length} item(s) (matches API).`);
+    console.log(`${id} PASSED: ${list.title} renders ${(response.body[list.apiKey] || []).length} item(s) (matches API).`);
   });
 }
 

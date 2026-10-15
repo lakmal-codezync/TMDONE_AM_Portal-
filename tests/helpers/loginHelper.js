@@ -9,7 +9,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const AUTH_STATE_PATH = path.resolve(process.cwd(), 'test-results', '.auth', 'tmdone-admin.json');
-const AUTH_STATE_MAX_AGE_MS = 30 * 60 * 1000;
+// The /token access token is valid for a year; global-setup.js signs in once per run and
+// every test reuses the saved session for the rest of that run.
+const AUTH_STATE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_BASE_URL = 'https://console.demo.dr.tmd1.org';
 
 function loadLocalEnv() {
   const envPath = path.resolve(process.cwd(), '.env');
@@ -35,7 +38,21 @@ function loadLocalEnv() {
 
 loadLocalEnv();
 
-function isFreshAuthState() {
+/**
+ * Only the origin of TMDONE_BASE_URL is used. A value such as
+ * "https://host/#/authentication/signin" would otherwise double every route
+ * ("…/signin/#/home/dashboard") - which is what broke the nightly CI runs.
+ * @param {string} value
+ */
+function toOrigin(value) {
+  try {
+    return new URL(value).origin;
+  } catch {
+    throw new Error(`TMDONE_BASE_URL must be a full URL such as ${DEFAULT_BASE_URL}, got "${value}".`);
+  }
+}
+
+export function isFreshAuthState() {
   if (!fs.existsSync(AUTH_STATE_PATH)) return false;
   const ageMs = Date.now() - fs.statSync(AUTH_STATE_PATH).mtimeMs;
   return ageMs < AUTH_STATE_MAX_AGE_MS;
@@ -72,6 +89,8 @@ async function applyCachedAuthState(page) {
 
   if (Array.isArray(state.origins) && state.origins.length > 0) {
     await page.addInitScript((origins) => {
+      // Set by loginToApp() when the saved session was rejected, so it stops re-applying it.
+      if (window.sessionStorage.getItem('__pw_skip_cached_auth')) return;
       const matchingOrigin = origins.find((origin) => origin.origin === window.location.origin);
       if (!matchingOrigin) return;
       for (const item of matchingOrigin.localStorage || []) {
@@ -89,18 +108,21 @@ async function applyCachedAuthState(page) {
 export const CREDENTIALS = {
   email: process.env.TMDONE_EMAIL || '',
   password: process.env.TMDONE_PASSWORD || '',
-  baseUrl: process.env.TMDONE_BASE_URL || 'https://console.demo.dr.tmd1.org',
+  baseUrl: toOrigin(process.env.TMDONE_BASE_URL || DEFAULT_BASE_URL),
   get loginUrl() {
     return `${this.baseUrl}/#/authentication/signin`;
   },
 };
 
-export function requireCredentials() {
+export function hasCredentials() {
   const hasPlaceholder =
     CREDENTIALS.email === 'your-email@example.com' ||
     CREDENTIALS.password === 'your-password';
+  return Boolean(CREDENTIALS.email && CREDENTIALS.password && !hasPlaceholder);
+}
 
-  if (!CREDENTIALS.email || !CREDENTIALS.password || hasPlaceholder) {
+export function requireCredentials() {
+  if (!hasCredentials()) {
     const message = 'Set real TMDONE_EMAIL and TMDONE_PASSWORD values in .env, environment variables, or GitHub Actions secrets.';
     // In CI missing secrets must fail the run, not skip every test.
     if (process.env.CI) throw new Error(message);
@@ -209,18 +231,47 @@ async function waitForLoginOrAppSignal(page) {
  */
 export async function loginToApp(page) {
   requireCredentials();
-  const isLoggedIn = () => page.url().includes('home') || page.url().includes('dashboard');
 
   if (await applyCachedAuthState(page)) {
+    // The app only checks that a token exists: an expired or revoked one shows up as 401
+    // responses and a redirect to sign-in a moment after the dashboard renders.
+    let rejected = false;
+    /** @param {import('@playwright/test').Response} response */
+    const onResponse = (response) => {
+      if (response.status() === 401) rejected = true;
+    };
+    page.on('response', onResponse);
     await page.goto(`${CREDENTIALS.baseUrl}/#/home/dashboard`, { waitUntil: 'domcontentloaded', timeout: 120000 }).catch(() => {});
     await waitForNoSpinner(page);
+    await appShell(page).waitFor({ state: 'visible', timeout: 30000 }).catch(() => {});
     await page.waitForTimeout(1500);
+    page.off('response', onResponse);
 
-    if (!page.url().includes('signin') && isLoggedIn()) {
+    if (!rejected && !page.url().includes('signin') && /home|dashboard/.test(page.url())) {
       console.log('Already logged in from cached state - skip!');
       return;
     }
+    console.log('Saved session was rejected (401 or sent to sign-in) - signing in again.');
+    await page.evaluate(() => {
+      window.sessionStorage.setItem('__pw_skip_cached_auth', '1');
+      window.localStorage.clear();
+    }).catch(() => {});
   }
+
+  // Fallback only: normally global-setup.js has already saved a session. Signing in here
+  // puts the password and token into this test's trace, so it should stay rare.
+  console.log('No usable saved session - signing in through the form.');
+  await signInWithForm(page);
+}
+
+/**
+ * Signs in through the sign-in form on `page` and saves the session for later tests.
+ * Called by global-setup.js outside any test (so the password and the year-long token
+ * never land in a test's trace or video), and by loginToApp() as a fallback.
+ * @param {import('@playwright/test').Page} page
+ */
+export async function signInWithForm(page) {
+  const isLoggedIn = () => page.url().includes('home') || page.url().includes('dashboard');
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     await dismissSweetAlert(page);
