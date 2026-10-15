@@ -8,6 +8,7 @@
 // ============================================================
 
 import { test, expect } from '@playwright/test';
+import { frontendIssue } from '../helpers/knownIssues.js';
 import {
   TM_DONE_CLUB_ROUTES,
   API,
@@ -165,7 +166,9 @@ test.describe('TM Done Club Analytics', () => {
     expect(await dateRangeValues(page)).toEqual(defaultInputs);
   });
 
-  test('TDCA-05: Card Refresh re-queries only that widget', async ({ page }) => {
+  test('TDCA-05: Card Refresh re-queries only that widget', {
+    annotation: frontendIssue('TM Done Club Analytics: the Refresh button on the chart cards sends no api/clubAnalytics request, so it does not reload its chart. First seen 2026-10-12.'),
+  }, async ({ page }) => {
     await openClubPage(page, TM_DONE_CLUB_ROUTES.analytics, 'TM Done Club Analytics', API.analytics);
     await waitForNoSpinner(page);
     await page.waitForLoadState('networkidle').catch(() => {});

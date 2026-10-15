@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import { test, expect } from '@playwright/test';
 import * as H from './helpers/campaignHelpers.js';
 import * as P from './helpers/promoHelpers.js';
+import { frontendIssue } from '../helpers/knownIssues.js';
 
 const RUN_STAMP = Date.now().toString().slice(-7);
 const CAMPAIGN_NAME = `Auto Campaign MC ${RUN_STAMP}`;
@@ -523,7 +524,9 @@ test.describe('02 - Manage Campaign known-defect checks', () => {
     await H.deleteCampaignIfPresent(browser, DEFECT_CAMPAIGN_NAME);
   });
 
-  test('Step 11: Order Summary Clear also removes the Stores filter from the summary APIs', async ({ page }) => {
+  test('Step 11: Order Summary Clear also removes the Stores filter from the summary APIs', {
+    annotation: frontendIssue('Campaign view > Order Summary: "Clear" empties the Stores select, but getCampaignStatsCounters and the chart APIs are still sent with the previously chosen StoreIds, so the numbers stay filtered. First seen 2026-10-12.'),
+  }, async ({ page }) => {
     test.setTimeout(300000);
     await H.openCampaignsList(page);
     const view = await openView(page, DEFECT_CAMPAIGN_NAME);

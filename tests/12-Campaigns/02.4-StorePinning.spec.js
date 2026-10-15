@@ -12,6 +12,7 @@
 
 import { test, expect } from '@playwright/test';
 import * as H from './helpers/campaignHelpers.js';
+import { frontendIssue } from '../helpers/knownIssues.js';
 
 const RUN_STAMP = Date.now().toString().slice(-7);
 const CAMPAIGN_NAME = `Auto Campaign SP ${RUN_STAMP}`;
@@ -259,7 +260,9 @@ test.describe('02.4 - Store Pinning filter and edit-form checks', () => {
     await H.gotoCampaignSection(page, CHECKS_CAMPAIGN_NAME, SECTION.section, SECTION.heading);
   });
 
-  test('SP-06: Store filter keeps the selected store and sends it to the list API', async ({ page }) => {
+  test('SP-06: Store filter keeps the selected store and sends it to the list API', {
+    annotation: frontendIssue('Campaign > Store Pinning: choosing a store in the Store filter leaves the select blank and campaignStorePinnings/list is sent without a StoreId, so the filter is ignored. First seen 2026-10-12.'),
+  }, async ({ page }) => {
     const storeFilter = page.locator('mat-select[formcontrolname="StoreId"]');
     await H.chooseMatOption(page, storeFilter, 'Food House');
     const request = H.waitForApi(page, LIST_API);
@@ -272,7 +275,9 @@ test.describe('02.4 - Store Pinning filter and edit-form checks', () => {
     await expect(storeFilter, 'the selected store should stay shown in the filter').toContainText('Food House');
   });
 
-  test('SP-07: Edit dialog restores the saved pinning zone', async ({ page }) => {
+  test('SP-07: Edit dialog restores the saved pinning zone', {
+    annotation: frontendIssue('Campaign > Store Pinning > Edit: step 3 shows "Select Select" instead of the saved zone (Colombo), so saving the edit could drop the zone. If the API returns AreaZoneId, the form does not bind it. First seen 2026-10-12.'),
+  }, async ({ page }) => {
     await createPin(page, ZONE_CHECK_PIN_NAME);
     const row = await findPinRow(page, ZONE_CHECK_PIN_NAME);
     const panel = await H.openRowMenu(page, row);
@@ -292,7 +297,9 @@ test.describe('02.4 - Store Pinning filter and edit-form checks', () => {
     expect(zoneText, `Edit Store Pinning step 3 does not restore the saved zone "${H.TEST_ZONE}" (select shows "${zoneText}")`).toContain(H.TEST_ZONE);
   });
 
-  test('SP-08: Card view shows the pinning name and its pinning type', async ({ page }) => {
+  test('SP-08: Card view shows the pinning name and its pinning type', {
+    annotation: frontendIssue('Campaign > Store Pinning card view: cards show dates, status and "Is Active" but no pinning name (the list API does return it), and the "Type" label is empty. First seen 2026-10-12.'),
+  }, async ({ page }) => {
     await createPin(page, CARD_CHECK_PIN_NAME);
     const json = await H.searchSection(page, CARD_CHECK_PIN_NAME, LIST_API);
     expect(json.Items.map((/** @type {{Name: string}} */ i) => i.Name)).toEqual([CARD_CHECK_PIN_NAME]);

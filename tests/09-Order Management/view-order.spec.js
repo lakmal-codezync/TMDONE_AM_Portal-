@@ -9,6 +9,7 @@
 
 import { test, expect } from '@playwright/test';
 import { loginToApp, CREDENTIALS } from '../helpers/loginHelper.js';
+import { backendIssue } from '../helpers/knownIssues.js';
 
 const ORDERS_URL = `${CREDENTIALS.baseUrl}/#/home/order-management`;
 const TEST_STORE = 'Food House';
@@ -120,7 +121,9 @@ test.describe('09-Order Management - Orders list (view-only)', () => {
     expect(await getTotalResults(page)).toBe(total);
   });
 
-  test('OM-07: Date range picker narrows the list to the chosen days', async ({ page }) => {
+  test('OM-07: Date range picker narrows the list to the chosen days', {
+    annotation: backendIssue('POST /api/order/getOrderList applies DateRange in a different timezone (likely UTC) than the OrderDateTime it returns: DateRange "2026/10/02-2026/10/02" returned order IHJ1CF with OrderDateTime 2026-10-03T00:02:19, so orders placed just after midnight fall into the previous day. First seen 2026-10-12.'),
+  }, async ({ page }) => {
     const fullTotal = await getTotalResults(page);
     const from = daysAgo(20);
     const to = daysAgo(10);

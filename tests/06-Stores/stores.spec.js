@@ -18,6 +18,7 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 import { loginToApp, CREDENTIALS } from '../helpers/loginHelper.js';
+import { backendIssue, frontendIssue } from '../helpers/knownIssues.js';
 
 const STORES_URL = `${CREDENTIALS.baseUrl}/#/home/stores`;
 const TARGET_STORE_NAME = 'Food House';
@@ -454,7 +455,9 @@ test.describe('06-Stores - Manage Stores Full Script', () => {
     }, { message: `${TARGET_STORE_NAME} status should return to "${originalStatus}".`, timeout: 60000 }).toBe(originalStatus);
   });
 
-  test('ST-15: A new search after paging shows its results from page 1', async ({ page }) => {
+  test('ST-15: A new search after paging shows its results from page 1', {
+    annotation: frontendIssue('Stores list: a new search made while on page 2 keeps the page number, so "Total N results found" is shown over an empty table. The search should reset pagination to page 1. First seen 2026-10-09.'),
+  }, async ({ page }) => {
     await clickPagination(page, page.locator('.ngx-pagination li.pagination-next a'));
     await expect(activePage(page)).toContainText('2', { timeout: 30000 });
 
@@ -475,7 +478,9 @@ test.describe('06-Stores - Manage Stores Full Script', () => {
     ).toHaveCount(total, { timeout: 30000 });
   });
 
-  test('ST-16: Live, Busy and Suspended counter cards match the Status filter totals', async ({ page }) => {
+  test('ST-16: Live, Busy and Suspended counter cards match the Status filter totals', {
+    annotation: backendIssue('Stores counters and the Status filter disagree: the Live counter card showed 371 while POST /api/store/list with Status "OPEN" returned 372 on every reload. The extra store "Isso" (Colombo) is listed as Live with an empty Status, so the counter query and the list query count stores differently. First seen 2026-10-12.'),
+  }, async ({ page }) => {
     test.setTimeout(420000);
     // Live/Busy change during the day as stores open and close, so the counter
     // is re-read on a fresh page load right before each comparison (up to 3

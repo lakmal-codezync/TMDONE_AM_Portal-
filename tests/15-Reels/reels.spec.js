@@ -10,6 +10,7 @@
 import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import { loginToApp, goToPage } from '../helpers/loginHelper.js';
+import { backendIssue } from '../helpers/knownIssues.js';
 
 const REELS_URL = '#/home/reels';
 const RUN_ID = Date.now();
@@ -646,7 +647,9 @@ test.describe.serial('Reels - create, view, edit and delete lifecycle', () => {
     }
   });
 
-  test('REEL-02: Create a reel with a real video upload and confirm it appears in the table', async () => {
+  test('REEL-02: Create a reel with a real video upload and confirm it appears in the table', {
+    annotation: backendIssue('https://uploads.tmdone.io/getimagecontenturl rejects requests from https://console.demo.dr.tmd1.org (CORS), so the console never gets an upload URL, never calls /api/reels/add, and Create stays on "Creating...". Add the console origin to the upload service CORS allow-list. First seen 2026-10-05.'),
+  }, async () => {
     test.setTimeout(300000);
     const menuItem = await reels.createReel();
 

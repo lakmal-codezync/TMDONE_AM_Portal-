@@ -9,6 +9,11 @@
 //   SITE_UP=false            -> demo site unreachable, tests not run
 //   no results.json          -> run cancelled / timed out / crashed
 //
+// At the end of the report it adds "Notes for the backend team" (failed
+// tests labelled with backendIssue() in tests/helpers/knownIssues.js,
+// plus any other failure that got an HTTP 5xx answer), "Notes for the
+// frontend team" (frontendIssue()), and labelled tests that passed today.
+//
 // Writes email-summary.html, appends subject/counts to $GITHUB_OUTPUT
 // and a short Markdown summary to $GITHUB_STEP_SUMMARY.
 //
@@ -76,9 +81,43 @@ function getFailureReason(test) {
 }
 
 /**
+ * Whole error text of every attempt (used to spot HTTP 5xx answers in unlabelled failures).
+ * @param {any} test
+ */
+function getFullErrorText(test) {
+  return (test.results || [])
+    .flatMap((result) => [result?.error?.message, ...(result?.errors || []).map((e) => e?.message)])
+    .filter(Boolean)
+    .map((message) => stripAnsi(String(message)))
+    .join('\n');
+}
+
+/**
+ * Known-issue labels set with tests/helpers/knownIssues.js (static and runtime annotations).
+ * @param {any} test
+ * @returns {{team: 'backend' | 'frontend', description: string} | null}
+ */
+function getKnownIssue(test) {
+  const annotations = [...(test.annotations || []), ...(test.results || []).flatMap((r) => r.annotations || [])];
+  for (const annotation of annotations) {
+    if (annotation?.type === 'backend-issue') return { team: 'backend', description: String(annotation.description || '') };
+    if (annotation?.type === 'frontend-issue') return { team: 'frontend', description: String(annotation.description || '') };
+  }
+  return null;
+}
+
+// An API answered with a server error somewhere in this failure.
+const SERVER_ERROR = /\b(?:Received|status(?: code)?|HTTP)[:\s]+5\d\d\b|\b5\d\d (?:Internal Server Error|Bad Gateway|Service Unavailable|Gateway Timeout)\b|Internal Server Error/i;
+
+/**
+ * @typedef {{file: string, testId: string, explain: string, status: string, reason: string,
+ *   issue: {team: 'backend' | 'frontend', description: string} | null, serverError: boolean}} Row
+ */
+
+/**
  * @param {any} suite
  * @param {string} file
- * @param {Array<{file: string, testId: string, explain: string, status: string, reason: string}>} rows
+ * @param {Row[]} rows
  */
 function walkSuite(suite, file, rows) {
   const currentFile = suite.file || file;
@@ -86,11 +125,92 @@ function walkSuite(suite, file, rows) {
     for (const test of spec.tests || []) {
       const { testId, explain } = splitTestId(spec.title);
       const status = statusLabel(test);
-      const reason = status === 'FAIL' || status === 'FLAKY' ? getFailureReason(test) : '';
-      rows.push({ file: currentFile, testId, explain, status, reason });
+      const failed = status === 'FAIL' || status === 'FLAKY';
+      const reason = failed ? getFailureReason(test) : '';
+      const serverError = failed && SERVER_ERROR.test(getFullErrorText(test));
+      rows.push({ file: currentFile, testId, explain, status, reason, issue: getKnownIssue(test), serverError });
     }
   }
   for (const sub of suite.suites || []) walkSuite(sub, currentFile, rows);
+}
+
+/** @param {Row} row */
+const testName = (row) => (row.testId !== '-' ? `${row.testId}: ${row.explain}` : row.explain);
+
+/**
+ * The notes at the end of the report: known backend issues (and unexplained server errors),
+ * known frontend issues, and known issues that passed today.
+ * @param {Row[]} rows
+ */
+function buildTeamNotes(rows) {
+  const failed = (/** @type {Row} */ row) => row.status === 'FAIL' || row.status === 'FLAKY';
+  const backend = rows.filter((row) => failed(row) && row.issue?.team === 'backend');
+  const serverErrors = rows.filter((row) => failed(row) && !row.issue && row.serverError);
+  const frontend = rows.filter((row) => failed(row) && row.issue?.team === 'frontend');
+  const passedKnown = rows.filter((row) => row.status === 'PASS' && row.issue);
+
+  const font = 'font-family:sans-serif;';
+  /** @param {Row} row @param {boolean} withIssue */
+  const item = (row, withIssue) => `
+      <li style="${font}margin-bottom:10px;">
+        <b>${escapeHtml(testName(row))}</b> <span style="color:#57606a;">(${escapeHtml(row.file)})</span>
+        ${row.status === 'FLAKY' ? '<span style="color:#9a6700;"> - intermittent: failed, then passed on retry</span>' : ''}
+        ${withIssue && row.issue ? `<div style="margin-top:4px;">${escapeHtml(row.issue.description)}</div>` : ''}
+        ${row.reason ? `<div style="margin-top:4px;font-family:monospace;font-size:12px;color:#57606a;">Today: ${escapeHtml(row.reason)}</div>` : ''}
+      </li>`;
+  /** @param {string} title @param {string} intro @param {string} color @param {string} body */
+  const section = (title, intro, color, body) => `
+  <div style="margin-top:28px;padding:14px 18px;border-left:4px solid ${color};background:#f6f8fa;">
+    <h3 style="${font}margin:0 0 6px;color:#24292f;">${title}</h3>
+    <p style="${font}margin:0 0 10px;color:#57606a;">${intro}</p>
+    <ol style="margin:0;padding-left:20px;">${body}</ol>
+  </div>`;
+
+  let html = '';
+  /** @type {string[]} */
+  const md = [];
+
+  if (backend.length || serverErrors.length) {
+    const body = [
+      ...backend.map((row) => item(row, true)),
+      ...serverErrors.map((row) => item(row, false)),
+    ].join('');
+    const intro = [
+      backend.length ? `${backend.length} test(s) failed on known backend issues (API, data or server configuration); each note says what is wrong and where.` : '',
+      serverErrors.length ? `${serverErrors.length} other failure(s) got an HTTP 5xx answer from the server - please check the server logs for this run.` : '',
+    ].filter(Boolean).join(' ');
+    html += section('Notes for the backend team', intro, '#cf222e', body);
+    md.push('### Notes for the backend team', '');
+    for (const row of backend) md.push(`- **${testName(row)}** (${row.file}): ${row.issue?.description}`);
+    for (const row of serverErrors) md.push(`- **${testName(row)}** (${row.file}): server error - ${row.reason.slice(0, 200)}`);
+    md.push('');
+  }
+
+  if (frontend.length) {
+    html += section(
+      'Notes for the frontend team',
+      `${frontend.length} test(s) failed on known console (UI) issues; each note says what the page does wrong.`,
+      '#9a6700',
+      frontend.map((row) => item(row, true)).join('')
+    );
+    md.push('### Notes for the frontend team', '');
+    for (const row of frontend) md.push(`- **${testName(row)}** (${row.file}): ${row.issue?.description}`);
+    md.push('');
+  }
+
+  if (passedKnown.length) {
+    html += section(
+      'Known issues that passed today',
+      'These tests carry a known-issue label but passed in this run: either the issue was fixed, or today\'s data did not trigger it. Please check, and once it is confirmed fixed, remove the label from the test.',
+      '#1a7f37',
+      passedKnown.map((row) => item(row, true)).join('')
+    );
+    md.push('### Known issues that passed today', '');
+    for (const row of passedKnown) md.push(`- **${testName(row)}** (${row.file}) - ${row.issue?.team} issue fixed, or not triggered today`);
+    md.push('');
+  }
+
+  return { html, markdown: md.join('\n') };
 }
 
 /**
@@ -165,9 +285,10 @@ function main() {
   }
 
   const report = JSON.parse(fs.readFileSync(REPORT_PATH, 'utf8'));
-  /** @type {Array<{file: string, testId: string, explain: string, status: string, reason: string}>} */
+  /** @type {Row[]} */
   const rows = [];
   for (const suite of report.suites || []) walkSuite(suite, suite.title, rows);
+  const notes = buildTeamNotes(rows);
 
   /** @type {Record<string, number>} */
   const counts = { ...empty };
@@ -177,6 +298,10 @@ function main() {
   const parts = [`${counts.PASS} passed`, `${counts.FAIL} failed`];
   if (counts.FLAKY) parts.push(`${counts.FLAKY} flaky`);
   if (counts['NOT RUN']) parts.push(`${counts['NOT RUN']} not run`);
+  const backendFailures = rows.filter(
+    (r) => (r.status === 'FAIL' || r.status === 'FLAKY') && (r.issue?.team === 'backend' || (!r.issue && r.serverError))
+  ).length;
+  if (backendFailures) parts.push(`${backendFailures} backend issue${backendFailures === 1 ? '' : 's'}`);
   const subject = `TMDone nightly: ${parts.join(', ')} (${RUN_DATE})`;
 
   /** @type {Map<string, typeof rows>} */
@@ -195,7 +320,11 @@ function main() {
         <tr>
           <td style="${cell}font-family:monospace;">${escapeHtml(row.testId)}</td>
           <td style="${cell}">${escapeHtml(row.explain)}</td>
-          <td style="${cell}font-weight:bold;color:${COLORS[/** @type {keyof typeof COLORS} */ (row.status)] || '#24292f'};">${row.status}</td>
+          <td style="${cell}font-weight:bold;color:${COLORS[/** @type {keyof typeof COLORS} */ (row.status)] || '#24292f'};">${row.status}${
+            row.issue && row.status !== 'PASS'
+              ? `<div style="font-weight:normal;font-size:11px;color:#57606a;">known ${row.issue.team} issue</div>`
+              : ''
+          }</td>
           <td style="${cell}font-family:monospace;font-size:12px;color:#57606a;">${row.reason ? escapeHtml(row.reason) : '-'}</td>
         </tr>`
         )
@@ -220,14 +349,17 @@ function main() {
     .join(' &nbsp;|&nbsp; ');
   const html = page('TMDone Admin Console - Nightly Playwright Run', `
   <p style="font-family:sans-serif;font-size:15px;">${countLine}</p>
-  ${tableSections}`);
+  ${tableSections}
+  ${notes.html}`);
 
   const failed = rows.filter((r) => r.status === 'FAIL' || r.status === 'FLAKY');
   const markdown = [
     `### ${parts.join(', ')}`,
     '',
     failed.length ? '| Status | File | Test | Reason |\n|---|---|---|---|' : '',
-    ...failed.map((r) => `| ${r.status} | ${r.file} | ${r.testId}: ${r.explain.replace(/\|/g, '/')} | ${r.reason.replace(/\|/g, '/').slice(0, 200)} |`),
+    ...failed.map((r) => `| ${r.status} | ${r.file} | ${testName(r).replace(/\|/g, '/')} | ${r.reason.replace(/\|/g, '/').slice(0, 200)} |`),
+    '',
+    notes.markdown,
   ].join('\n');
 
   writeOutputs(subject, html, counts, overall, markdown);

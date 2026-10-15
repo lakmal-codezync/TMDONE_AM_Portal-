@@ -15,6 +15,7 @@
 
 import { test, expect } from '@playwright/test';
 import { loginToApp, CREDENTIALS } from '../helpers/loginHelper.js';
+import { backendIssue } from '../helpers/knownIssues.js';
 
 // ===================== CONSTANTS ============================
 const BASE_URL = CREDENTIALS.baseUrl;
@@ -710,7 +711,9 @@ test('VP-14: Successful and Failed Orders KPI cards display order counts and OMR
 // ============================================================
 // VP-15: Customers breakdown
 // ============================================================
-test('VP-15: Additional performance metrics are visible', async ({ page }) => {
+test('VP-15: Additional performance metrics are visible', {
+  annotation: backendIssue('api/performance/getCustomerInfo (Vendor Performance "Customers" widget) is very slow: 40-80 s on its own and over 4 minutes while other requests are running, so the widget and this test time out. First seen 2026-10-11.'),
+}, async ({ page }) => {
   test.setTimeout(360000);
   const api = await openVendorPerformance(page);
   const customers = await api.latest('getCustomerInfo', () => true, SLOW_API_TIMEOUT);

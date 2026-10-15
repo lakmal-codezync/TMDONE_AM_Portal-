@@ -148,6 +148,24 @@ Settings (repository **Settings -> Secrets and variables -> Actions**):
 | `TMDONE_API_URL` | variable (optional) | API URL for the preflight check, default `https://amportal.demo.dr.tmd1.org` |
 | `REPORT_EMAIL_TO` | variable (optional) | email recipients (comma separated), default `lakmal@codezync.com` |
 
+#### Notes for the backend team
+
+A test that fails on purpose because of a known product bug carries a label from `tests/helpers/knownIssues.js`:
+
+```js
+import { backendIssue } from '../helpers/knownIssues.js';
+
+test('OM-07: Date range picker narrows the list to the chosen days', {
+  annotation: backendIssue('POST /api/order/getOrderList applies DateRange in a different timezone ... First seen 2026-10-12.'),
+}, async ({ page }) => { ... });
+```
+
+At the end of every email (and the run's summary page) the report adds:
+
+- **Notes for the backend team** - each failed test labelled `backendIssue(...)` with its note (what is wrong, which API, the evidence) and today's error, plus any other failure where an API answered with HTTP 5xx. The subject line counts them (e.g. `... 11 failed, 5 backend issues`).
+- **Notes for the frontend team** - failed tests labelled `frontendIssue(...)`.
+- **Known issues that passed today** - labelled tests that passed: the bug was fixed or not triggered; remove the label once the fix is confirmed.
+
 The tests sign in once per run in `tests/helpers/global-setup.js`, outside any test, so the password and access token never appear in a test's trace. Reports can contain screenshots of the console, so keep this repository private.
 
 ## Folder Structure

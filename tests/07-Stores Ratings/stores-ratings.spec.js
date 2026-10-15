@@ -12,6 +12,7 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 import { loginToApp, CREDENTIALS } from '../helpers/loginHelper.js';
+import { backendIssue } from '../helpers/knownIssues.js';
 
 const RATINGS_URL = `${CREDENTIALS.baseUrl}/#/home/stores-ratings`;
 const TEST_STORE = 'Food House';
@@ -53,7 +54,9 @@ test.describe('07-Stores Ratings - Stores Ratings Module', () => {
     expect(await getTotalResults(page)).toBe(1);
   });
 
-  test('SR-03: Search without a store filter lists all stores and pagination pages through them', async ({ page }) => {
+  test('SR-03: Search without a store filter lists all stores and pagination pages through them', {
+    annotation: backendIssue('POST /api/ratings/getAmStoreRatings has no stable sort order: replaying {"StoreIds":[],"Page":1} twice returned different store sets, so stores repeat across pages and others are never shown. Sort by a unique key (e.g. store id) before paging. First seen 2026-10-12.'),
+  }, async ({ page }) => {
     test.setTimeout(600000);
     const firstPage = waitForRatingsPage(page, 1);
     await clickToolbar(page, 'Search');
