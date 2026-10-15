@@ -10,9 +10,9 @@ name: Nightly E2E (live demo)
 
 on:
   schedule:
-    # 18:47 UTC = 00:17 Sri Lanka time. GitHub starts scheduled runs late when it is busy
-    # (3-5 hours lately) and the :00/:30 marks are the most delayed, so start early and off-peak.
-    - cron: '47 18 * * *'
+    # 00:15 UTC = 05:45 Sri Lanka time (UTC+5:30). GitHub can start scheduled runs late
+    # when it is busy; use "Run workflow" on the Actions tab for an immediate run.
+    - cron: '15 0 * * *'
   workflow_dispatch:
     inputs:
       tests:

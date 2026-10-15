@@ -132,7 +132,7 @@ On pushes to `main` (or run by hand) it also runs a short **smoke test** on the 
 
 ### Nightly E2E (`.github/workflows/daily-playwright.yml`)
 
-Runs the whole suite every night (scheduled 00:17 Sri Lanka time; GitHub often starts scheduled runs a few hours late) and can be started from the Actions tab with **Run workflow**, optionally for one folder (e.g. `08-Offers`).
+Runs the whole suite every day at 5:45 AM Sri Lanka time (cron `15 0 * * *`, 00:15 UTC; GitHub can start scheduled runs late when it is busy) and can be started from the Actions tab with **Run workflow**, optionally for one folder (e.g. `08-Offers`).
 
 1. **Preflight** - checks the console and its API respond. If not, no tests run and the email says the site is down.
 2. **Tests** - the suite in 3 shards that run one after another (all tests share one live account), each with its own 6-hour job limit. A shard stops early after 25 failed tests, and skips itself if the site went down meanwhile.
