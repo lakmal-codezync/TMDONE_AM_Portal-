@@ -24,7 +24,7 @@ permissions:
 jobs:
   checks:
     name: Static checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -70,7 +70,7 @@ jobs:
     name: Smoke test (live demo)
     needs: checks
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
       group: live-demo-smoke

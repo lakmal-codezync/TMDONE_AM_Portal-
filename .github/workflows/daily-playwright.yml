@@ -37,7 +37,7 @@ env:
 jobs:
   preflight:
     name: Demo site reachable
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
       site_up: ${{ steps.check.outputs.site_up }}
@@ -72,7 +72,7 @@ jobs:
   e2e:
     name: Tests (shard ${{ matrix.shard }} of 3)
     needs: preflight
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # GitHub's limit for one job is 360 minutes; Playwright stops itself at 320 (below)
     # so it can still write its report before the job is killed.
     timeout-minutes: 345
@@ -143,7 +143,7 @@ jobs:
     name: Report and email
     needs: [preflight, e2e]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
